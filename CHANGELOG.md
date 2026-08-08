@@ -301,6 +301,46 @@ Mechanical consequences, all measured rather than assumed:
 **104/104 assertions pass** (47 feel, 32 touch, 25 verify). Zero console errors, zero
 warnings.
 
+## Pass 12 — matching the second reference
+
+| Correctness | Feel | Look | Juice | Performance | Touch |
+|---|---|---|---|---|---|
+| **9** | **9** | **9** | **9** | **9** | **9** |
+
+A second reference arrived: a back view of the penguin mid-run. Measured against it, pass 11
+was wrong in three specific ways.
+
+- **The body was an egg, not a pear.** The reference is a bowling pin: widest at **19% of
+  the body height**, tapering to a head **0.66** of that width. Mine was widest at 42% with a
+  head 0.82 of the width, so the silhouette had no taper to speak of. Reprofiled from the
+  measurements — the body is wider at the bottom than pass 11 and considerably narrower at
+  the shoulders, which is what makes it read as a penguin from behind rather than a lemon.
+- **The flippers were long teardrops; the reference's are stubby paddles.** Measured at
+  0.31 × 0.42 (a 0.78 ratio, nearly square) with a *rounded* tip, not a point — so the taper
+  dropped from 0.80 to 0.42 and the paddle shortened by a third. The reference also holds
+  them out at **~35° from vertical**, computed from the offset between flipper root and tip;
+  resting flare went from 0.42 to 0.40 rad with a gentler speed ramp so a full run sits at
+  40° rather than 56°.
+- **The feet had to clear the belly.** A wider bottom hid them completely. Widened the stance
+  to ±0.255 and grew the pads, so the outer toes now break the body's flank silhouette. They
+  still cannot be fully visible from behind the way the reference shows them — that image is
+  shot from a near-level camera, and this game's camera sits 22° above. Stated rather than
+  faked: dropping the pitch to match would cost obstacle legibility down the corridor.
+
+One structural fix fell out of this. The belly bib is painted into the shell texture by
+texture row, but `LatheGeometry` spreads `v` evenly across *rings*, not evenly in Y — and
+the new profile's rings are far from uniform in Y (spans range from 0.014 to 0.135). The bib
+top would have landed at world 1.40, above the eyes, covering the face. So the profile is now
+a single shared constant, `BODY_PROFILE`, and the texture converts height to texture row
+through the actual resampled ring list (`yAtV`). The bib is placed in body-local heights now,
+and it stays correct if the profile is ever edited again.
+
+The crest also shrank: the reference's crown is clean, so the tufts are now small enough to
+keep the dome's silhouette while still carrying the springy secondary motion.
+
+**104/104 assertions pass.** Draw calls 44–50 in ordinary play, 20–21k triangles, zero
+console errors, zero warnings.
+
 ---
 
 ## Residual, stated plainly

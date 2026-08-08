@@ -444,6 +444,19 @@ const _e1=new THREE.Euler(), _m1=new THREE.Matrix4(), _m2=new THREE.Matrix4();
 const _c1=new THREE.Color(), _c2=new THREE.Color();
 
 /* =====================================================================================
+   3b. THE BODY PROFILE — a pear, measured off the reference: widest at 19% of the body
+   height, tapering to a head 0.66 of that width, and no neck at all. Radii are local to
+   the body centre; the mesh and the belly-bib texture are both generated from this list.
+   ===================================================================================== */
+const BODY_PROFILE = [
+  [0.000,-0.755],[0.255,-0.735],[0.420,-0.690],[0.520,-0.625],[0.570,-0.550],
+  [0.584,-0.467],[0.580,-0.380],[0.565,-0.270],[0.540,-0.150],[0.508,-0.020],
+  [0.472, 0.115],[0.437, 0.250],[0.406, 0.385],[0.385, 0.510],[0.352, 0.620],
+  [0.268, 0.700],[0.148, 0.748],[0.000, 0.762],
+];
+const BODY_RINGS = resampleProfile(BODY_PROFILE, 5);
+
+/* =====================================================================================
    4. TEXTURES — every pixel in this game is painted to a <canvas> at boot.
    No external URLs, nothing that can 404.
    ===================================================================================== */
@@ -626,13 +639,14 @@ function buildShellTex(){
      under the beak. Painted row by row so the shape is a real bib, not a stripe. */
   const {cv,ctx}=mkCanvas(S,S);
   ctx.drawImage(base.cv,0,0);
-  const BIB_TOP = 0.78;
+  const BIB_LO = -0.720, BIB_HI = 0.345;            // local body heights, not guessed-at v
   for (let py=0; py<S; py++){
     const v = 1 - (py+0.5)/S;                       // v=0 at the bottom pole, 1 at the crown
-    if (v > BIB_TOP) continue;
-    const t = v/BIB_TOP;                            // 0 belly-bottom, 1 throat
-    const halfW = 0.212*(1 - 0.40*t*t)*Math.min(1, (1-t)*7.0 + 0.18);
-    const a = 0.95*smooth(clamp01((BIB_TOP - v)/0.10));
+    const yl = yAtV(BODY_RINGS, v);
+    if (yl > BIB_HI || yl < BIB_LO) continue;
+    const t = (yl - BIB_LO)/(BIB_HI - BIB_LO);      // 0 belly-bottom, 1 throat
+    const halfW = 0.218*(1 - 0.36*t*t)*Math.min(1, (1-t)*7.0 + 0.20);
+    const a = 0.95*smooth(clamp01((1 - t)/0.10));
     if (halfW <= 0.004 || a <= 0.01) continue;
     const x0 = (0.5-halfW)*S, x1 = (0.5+halfW)*S;
     const g = ctx.createLinearGradient(x0,0,x1,0);
@@ -925,6 +939,9 @@ function weldNormals(g, eps){
 }
 /* smooth lathe from a sparse profile (Catmull-Rom resampled) */
 function latheFromProfile(pts, radial, samples){
+  return new THREE.LatheGeometry(resampleProfile(pts, samples), radial||24);
+}
+function resampleProfile(pts, samples){
   const out = [];
   const P = (i)=> pts[clamp(i,0,pts.length-1)];
   const n = samples || 8;
@@ -938,7 +955,13 @@ function latheFromProfile(pts, radial, samples){
     }
   }
   out.push(new THREE.Vector2(Math.max(0.0006,pts[pts.length-1][0]), pts[pts.length-1][1]));
-  return new THREE.LatheGeometry(out, radial||24);
+  return out;
+}
+/* LatheGeometry spreads v evenly across rings, not evenly in Y, so turning a body height
+   into a texture row needs the resampled ring list. This is what puts the bib where we mean. */
+function yAtV(rings, v){
+  const n = rings.length, f = clamp01(v)*(n-1), i = Math.min(n-2, Math.floor(f));
+  return lerp(rings[i].y, rings[i+1].y, f-i);
 }
 /* bake ambient occlusion into vertex colours — free contact darkening, no SSAO */
 function bakeAO(geo, {axis='y', lo=-1, hi=1, dark=0.55, cavity=0}={}){
@@ -1061,7 +1084,7 @@ const ANIM = {
   strideRate: 2.10,     // radians of leg phase per unit travelled — small, fast penguin steps
   legAmp: 0.52,         // feet paddle rather than stride
   armAmp: 0.46,         // flippers swing gently fore-aft...
-  flareBase: 0.42, flareSpeed: 0.44,   // ...and flare outward the faster you go
+  flareBase: 0.40, flareSpeed: 0.30,   // ...and flare outward the faster you go
   bobAmp: 0.052, swayAmp: 0.118, swayRoll: 0.088,   // the waddle lives here
   blendFast: 12.0,      // 1/s for ordinary state changes (~83ms)
 };
@@ -1091,37 +1114,33 @@ function buildCharacter(){
   const matGlint= physMat({ color:col('#ffffff'), roughness:0.10, emissive:col('#ffffff'), emissiveIntensity:0.35 });
 
   /* ---- the body: one egg, widest low, doming straight into the head ---- */
-  const bodyGeo = bakeAO(latheFromProfile([
-    [0.000,-0.755],[0.229,-0.700],[0.359,-0.610],[0.435,-0.500],[0.481,-0.380],
-    [0.498,-0.250],[0.500,-0.120],[0.494, 0.010],[0.481, 0.140],[0.458, 0.265],
-    [0.431, 0.385],[0.408, 0.500],[0.385, 0.610],[0.321, 0.700],[0.176, 0.752],
-    [0.000, 0.762],
-  ], 28, 5), {axis:'y', lo:-0.78, hi:0.42, dark:0.58});
+  const bodyGeo = bakeAO(latheFromProfile(BODY_PROFILE, 28, 5),
+    {axis:'y', lo:-0.78, hi:0.42, dark:0.58});
   const shell = new THREE.Mesh(bodyGeo, matShell);
   shell.position.y = BODY_Y; shell.castShadow = true;
   bodyG.add(shell);
 
   /* ---- beak and tail: one draw call, tinted per part ---- */
   const trim = new THREE.Mesh(mergeGeos([
-    {geo: beakGeo(0.105, 0.098, 0.180), matrix: MTX(0, 1.262, -0.495, -0.15,0,0), tint:C.ember},
+    {geo: beakGeo(0.105, 0.098, 0.180), matrix: MTX(0, 1.262, -0.468, -0.15,0,0), tint:C.ember},
     /* the tail is a shaded extension of the body, not a contrasting patch: seen face-on
        from the game camera a dark tail reads as a hole punched in the silhouette */
-    {geo: paddleGeo(0.140, 0.265, 0.058), matrix: MTX(0, 0.430, 0.360, 1.50,0,0), tint:'#f2c33e',
-     ao:{lo:0.30, hi:0.52, dark:0.66}},
+    {geo: paddleGeo(0.140, 0.265, 0.058), matrix: MTX(0, 0.405, 0.445, 1.50,0,0), tint:'#f2c33e',
+     ao:{lo:0.28, hi:0.50, dark:0.66}},
   ]), matTrim);
   trim.castShadow = true; bodyG.add(trim);
 
   /* ---- crest: two soft feathers on a pivot, so they keep springing after the head stops ---- */
   const crestG = new THREE.Group(); crestG.position.set(0, 1.470, 0.010); bodyG.add(crestG);
-  const featherGeo = paddleGeo(0.062, 0.200, 0.038, 0.88);
+  const featherGeo = paddleGeo(0.054, 0.155, 0.034, 0.88);
   const crest = new THREE.Mesh(mergeGeos([
-    {geo: featherGeo, matrix: MTX(-0.092, 0.115, 0.010, 0.92, 0,  0.34), tint:'#ffffff'},
-    {geo: featherGeo, matrix: MTX( 0.092, 0.115, 0.010, 0.92, 0, -0.34), tint:'#ffffff'},
+    {geo: featherGeo, matrix: MTX(-0.084, 0.098, 0.015, 1.02, 0,  0.30), tint:'#ffffff'},
+    {geo: featherGeo, matrix: MTX( 0.084, 0.098, 0.015, 1.02, 0, -0.30), tint:'#ffffff'},
   ]), matCrest);
   crest.castShadow = true; crestG.add(crest);
 
   /* ---- eyes: one mesh built around the eye line, so a Y-squash reads as a blink ---- */
-  const EY = 1.348, EZ = -0.330;
+  const EY = 1.348, EZ = -0.322;
   const eyeG = new THREE.SphereGeometry(0.083, 14, 12);
   const eyes = new THREE.Mesh(mergeGeos([
     {geo:eyeG, matrix:MTX(-0.139,0,0, 0,0,0, 1,1,0.66), tint:'#ffffff'},
@@ -1130,18 +1149,18 @@ function buildCharacter(){
   eyes.position.set(0, EY, EZ); bodyG.add(eyes);
   const glintG = new THREE.SphereGeometry(0.022, 8, 6);
   const glints = new THREE.Mesh(mergeGeos([
-    {geo:glintG, matrix:MTX(-0.152, 1.378, -0.384), tint:'#ffffff'},
-    {geo:glintG, matrix:MTX( 0.126, 1.378, -0.384), tint:'#ffffff'},
+    {geo:glintG, matrix:MTX(-0.150, 1.376, -0.374), tint:'#ffffff'},
+    {geo:glintG, matrix:MTX( 0.124, 1.376, -0.374), tint:'#ffffff'},
   ]), matGlint);
   bodyG.add(glints);
 
   /* ---- flippers: teardrop paddles, sun at the shoulder fading to plum at the tip ---- */
   function makeFlipper(side){
     const pivot = new THREE.Group();
-    pivot.position.set(0.428*side, 1.062, 0.020);
-    const geo = bakeGradient(paddleGeo(0.158, 0.318, 0.088), C.ember, C.sun, -0.10, 0.24, 0.84);
+    pivot.position.set(0.452*side, 1.025, 0.020);
+    const geo = bakeGradient(paddleGeo(0.157, 0.232, 0.086, 0.42), C.ember, C.sun, -0.06, 0.19, 0.84);
     const pad = new THREE.Mesh(geo, matFlipper);
-    pad.position.y = -0.288; pad.castShadow = true;
+    pad.position.y = -0.205; pad.castShadow = true;
     pivot.add(pad);
     bodyG.add(pivot);
     return pivot;
@@ -1149,10 +1168,10 @@ function buildCharacter(){
   /* ---- feet: stubby pads that poke out from under the belly. Barely any leg. ---- */
   function makeFoot(side){
     const pivot = new THREE.Group();
-    pivot.position.set(0.205*side, 0.300, -0.020);
+    pivot.position.set(0.255*side, 0.300, 0.010);
     const padG = new THREE.Group(); padG.position.y = -0.235; pivot.add(padG);
-    const pad = new THREE.Mesh(roundedBox(0.290, 0.128, 0.400, 0.056, 3), matFoot);
-    pad.position.set(0, 0, -0.235); pad.rotation.y = -0.19*side; pad.castShadow = true;
+    const pad = new THREE.Mesh(roundedBox(0.305, 0.132, 0.425, 0.058, 3), matFoot);
+    pad.position.set(0, 0, -0.185); pad.rotation.y = -0.22*side; pad.castShadow = true;
     padG.add(pad);
     return { pivot, boot:padG };
   }
@@ -1722,7 +1741,7 @@ function updatePlayArea(){
    16. PLAYER
    ===================================================================================== */
 const ST = { RUN:0, DIVE:1, SLIDE:2, GETUP:3, RAG:4, BLEND:5 };
-const RAG_FLOOR = 0.63;   // body half-width: how high the centre sits when it lies on its side
+const RAG_FLOOR = 0.60;   // body half-width: how high the centre sits when it lies on its side
 const J = TUNING.jump, MV = TUNING.move, DV = TUNING.dive, RG = TUNING.ragdoll;
 
 function mkPose(){
