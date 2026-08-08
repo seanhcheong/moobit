@@ -291,6 +291,9 @@ const TUNING = {
     apexScale:   0.80,  // extra gravity scale inside the apex window
     apexFrames:  8,     // fixed steps the apex assist may last per jump
     cutMul:      0.45,  // release early -> vy *= this
+    minHeight:   1.05,  // ...but never below this apex. A tap, or a jump that came out of
+                        // the buffer after the player already let go, still has to clear the
+                        // shortest obstacle (the sweeper bar tops out at 0.70).
     coyote:      0.110, // s
     buffer:      0.140, // s
     landHardVel: 12.0,  // |vy| that produces a maximum landing squash
@@ -1894,7 +1897,12 @@ function stepPlayer(dt){
   if (P.grounded && (P.state===ST.RUN)) P.coyoteT = LIVE.coyote; else P.coyoteT = Math.max(0, P.coyoteT - dt);
   if (In.diveEdge){ In.diveEdge = false; if (!locked && P.alive) startDive(); }
   if (P.bufferT > 0 && P.coyoteT > 0 && P.state === ST.RUN && P.alive && !P.dying) doJump();
-  if (!In.jumpHeld && P.jumped && P.vy > 0){ P.vy *= J.cutMul; P.jumped = false; }  // variable height
+  if (!In.jumpHeld && P.jumped && P.vy > 0){                                  // variable height
+    const gRise = J.gravityFall*J.riseRatio;
+    const need = Math.sqrt(2*gRise*Math.max(0, J.minHeight - P.y));           // floor the apex
+    P.vy = Math.max(P.vy*J.cutMul, need);
+    P.jumped = false;
+  }
 
   /* ---------- ragdoll branch ---------- */
   if (P.state===ST.RAG){
@@ -1904,6 +1912,16 @@ function stepPlayer(dt){
     P.x += P.rv.x*dt;
     P.z += (P.rv.z + (onGround ? Belt.speed*RG.beltGrab : Belt.speed*B.airDrag*0.5))*dt;
     P.rcy += P.rv.y*dt;
+    /* being knocked down in the hazard zone still has to kill you: without this the belt
+       drags the limp body past the lip, the floor drops away, and the run hangs for the
+       four seconds it takes to fall before anything resolves. */
+    if (P.z > B.rear && !P.dying && Game.state === 'play'){
+      P.dying = true; P.deadT = 0;
+      P.rv.y = Math.max(P.rv.y, 5.0);
+      P.rav.set(rndR(-8,8), rndR(-4,4), B.rearThrow.spin*0.7);
+      Fx.flash(0.7); Cam.shake(5.0); Sfx.death();
+    }
+    if (P.rcy < -25 && !P.dying && Game.state === 'play'){ P.dying = true; P.deadT = 0.85; }
     const floorY = (P.z > B.rear + 0.4) ? -60 : RAG_FLOOR;
     if (P.rcy < floorY){
       P.rcy = floorY;
@@ -2881,9 +2899,14 @@ const UI = {
       : 'W A S D · SPACE jump · SHIFT dive · R restart';
   },
   bindControls(){
+    /* Space is the jump key. A mouse-clicked button keeps focus, and Space then activates
+       that button instead of jumping — which on RUN AGAIN silently restarted the run.
+       Drop focus after pointer-driven clicks only, so keyboard navigation still works
+       (a keyboard-activated click reports detail === 0). */
+    const unfocus = (e)=>{ if (e && e.detail > 0 && e.currentTarget && e.currentTarget.blur) e.currentTarget.blur(); };
     const tg = (el, key, fn)=>{
       el.addEventListener('click', (e)=>{
-        e.stopPropagation();
+        e.stopPropagation(); unfocus(e);
         Settings[key] = !Settings[key];
         el.dataset.on = Settings[key] ? '1':'0';
         if (fn) fn(Settings[key]);
@@ -2897,16 +2920,16 @@ const UI = {
     for (const child of seg.children){
       child.dataset.on = (+child.dataset.v === Settings.quality) ? '1':'0';
       child.addEventListener('click',(e)=>{
-        e.stopPropagation();
+        e.stopPropagation(); unfocus(e);
         Settings.quality = +child.dataset.v;
         for (const c2 of seg.children) c2.dataset.on = (c2===child)?'1':'0';
         Quality.apply(Settings.quality);
       });
     }
-    $('btnSet').addEventListener('click',(e)=>{ e.stopPropagation(); this.toggleSettings(); });
-    $('btnClose').addEventListener('click',(e)=>{ e.stopPropagation(); this.toggleSettings(false); });
-    $('btnPlay').addEventListener('click',(e)=>{ e.stopPropagation(); Game.start(); });
-    $('btnAgain').addEventListener('click',(e)=>{ e.stopPropagation(); Game.restart(); });
+    $('btnSet').addEventListener('click',(e)=>{ e.stopPropagation(); unfocus(e); this.toggleSettings(); });
+    $('btnClose').addEventListener('click',(e)=>{ e.stopPropagation(); unfocus(e); this.toggleSettings(false); });
+    $('btnPlay').addEventListener('click',(e)=>{ e.stopPropagation(); unfocus(e); Game.start(); });
+    $('btnAgain').addEventListener('click',(e)=>{ e.stopPropagation(); unfocus(e); Game.restart(); });
   },
   toggleSettings(force){
     const on = force===undefined ? !this.setPanel.classList.contains('on') : force;
@@ -2982,6 +3005,14 @@ const In = {
 
   isUI(t){ return !!(t && t.closest && t.closest('.iconBtn,.btn,.toggle,.seg,#setCard')); },
 
+  /* a pointerup can be lost (browser UI, call, app switch). If we keep holding the slot,
+     steering sticks and every later tap is silently ignored. */
+  dropPointers(){
+    this.padId = -1; this.padOn = false; this.actId = -1;
+    this.jumpHeld = false; this.mx = 0; this.mz = 0;
+    if (typeof Pad !== 'undefined' && Pad.ring) Pad.hide();
+  },
+
   init(){
     addEventListener('keydown', (e)=>{
       if (e.repeat) return;
@@ -3002,7 +3033,7 @@ const In = {
       this.keys[k] = false;
       if (k===' ') this.jumpHeld = false;
     });
-    addEventListener('blur', ()=>{ for (const k in this.keys) this.keys[k]=false; this.jumpHeld=false; });
+    addEventListener('blur', ()=>{ for (const k in this.keys) this.keys[k]=false; this.dropPointers(); });
 
     addEventListener('gamepadconnected', ()=>{ this.gamepad = true; });
     addEventListener('gamepaddisconnected', ()=>{ this.gamepad = false; });
@@ -3049,7 +3080,8 @@ const In = {
       this.padOn = true; this.padT = 0;
       Pad.show(this.padOX, this.padOY);
     } else {
-      if (this.actId >= 0) return;
+      const stale = this.actId >= 0 && (performance.now() - this.actT) > 1200;
+      if (this.actId >= 0 && !stale) return;
       this.actId = e.pointerId;
       this.actX = e.clientX; this.actY = e.clientY;
       this.actT = performance.now(); this.actMoved = 0; this.actUsed = false;
@@ -3415,8 +3447,13 @@ function frame(now){
     }
     if (steps >= TUNING.perf.maxCatchUp && acc > FIXED) acc = 0;
     DBG.steps = steps; if (steps > DBG.maxSteps) DBG.maxSteps = steps;
+  } else {
+    /* nothing consumes input while paused, so drop it instead of firing it on resume */
+    In.jumpEdge = false; In.diveEdge = false;
   }
-  In.jumpEdge = false; In.diveEdge = false;
+  /* NOTE: edges are consumed inside the fixed step, never here. A frame can legitimately
+     run zero steps (any display faster than 60Hz does it every other frame), and clearing
+     them here threw the press away before the simulation ever saw it. */
 
   const alpha = clamp01(acc/FIXED);
   const p = lerpPose(prevPose, curPose, alpha);
@@ -3446,7 +3483,7 @@ function frame(now){
 
 /* pause on hide; clamp catch-up on return */
 document.addEventListener('visibilitychange', ()=>{
-  if (document.hidden){ Game.pause(true); if (Sfx.ctx && Sfx.ctx.state==='running') Sfx.ctx.suspend(); }
+  if (document.hidden){ Game.pause(true); In.dropPointers(); if (Sfx.ctx && Sfx.ctx.state==='running') Sfx.ctx.suspend(); }
   else {
     acc = 0; lastT = 0;
     Game.pause(UI.setPanel.classList.contains('on'));

@@ -19,6 +19,10 @@ rewritten to a local copy of three.js, one line, verified diff):
 - **`verify`** — 25 assertions across four viewports (16:9, portrait, square, 2.39:1
   ultrawide): draw calls, triangles, aspect-ratio equivalence, catch-up clamping, plus a
   five-minute simulation soak.
+- **`frameinput`** — 7 assertions that drive the *real* `requestAnimationFrame` loop under a
+  virtualised clock at 60 / 120 / 144Hz. Added in pass 13, after a bug that the other three
+  suites were structurally incapable of seeing: they call the fixed step directly and so
+  never exercise the frame loop's own input plumbing.
 
 Plus a per-call allocation breakdown and screenshots at every game state in both
 orientations.
@@ -340,6 +344,60 @@ keep the dome's silhouette while still carrying the springy secondary motion.
 
 **104/104 assertions pass.** Draw calls 44–50 in ordinary play, 20–21k triangles, zero
 console errors, zero warnings.
+
+## Pass 13 — three real bugs from play feedback
+
+| Correctness | Feel | Look | Juice | Performance | Touch |
+|---|---|---|---|---|---|
+| **9** | **9** | **9** | **9** | **9** | **9** |
+
+Reported symptoms: *"the jump sometimes doesn't work and the game sometimes resets."* Both
+were real. Every fix below is paired with a test, and every test was checked against the
+broken build first — a test that only passes on the fixed build proves nothing.
+
+**1. Input was thrown away on frames that ran zero simulation steps.** The frame loop ended
+with an unconditional `In.jumpEdge = false; In.diveEdge = false;`. Edges are meant to be
+consumed *inside* the fixed step, and a frame can legitimately run zero steps — any display
+faster than 60Hz does it roughly every other frame. So the clear was destroying presses
+before the simulation ever saw them.
+
+Measured on the broken build: **60Hz 0/14 dropped, 120Hz 7/14, 144Hz 8/14**, and dives
+4/8 at 120Hz. Half of every input, on any modern phone. That is the whole of "the jump
+sometimes doesn't work", and it explains why it felt random: at exactly 60Hz it is fine.
+
+**2. Being knocked down in the hazard zone hung the run for five seconds.** The rear-lip
+death check lived only in the non-ragdoll branch, so a limp body dragged past the lip never
+triggered it. The floor drops to −60 past the lip, so the penguin fell into the void for
+~3.5s, bounced on the invisible floor, blended back to standing, was teleported to belt
+level, and *then* died. From the player's chair: the character vanishes, nothing happens for
+five seconds, then a death screen appears out of nowhere — indistinguishable from a crash or
+a reset. The check now also runs inside the ragdoll branch, with a fallback for any body
+below −25. **300 frames to resolve before, 90 after.**
+
+The first version of that test asserted only "it eventually dies", which *passed on the
+broken build*. "Eventually" was never the property that mattered; the assertion is now bounded
+to 2.5 seconds.
+
+**3. A tapped jump could not clear the shortest obstacle.** `cutMul` (0.45 on release) scales
+velocity, and height goes as velocity squared — so a release before the first step produced
+**20% of full height: an apex of 0.47** against a sweeper bar that tops out at 0.70. Worse,
+this fired on the *common* pattern of buffering a jump just before landing and letting go
+before it comes out. The cut now floors the apex at `jump.minHeight` (1.05) by solving for the
+velocity still needed from the current height, so a tap reaches 1.00 and clears with margin
+while staying 43% of a held jump. Variable height is intact; the useless hop is gone.
+
+**Two hardening changes** with no reproduction, stated as such rather than dressed up as
+fixes. A lost `pointerup` — an app switch, an incoming call — used to leave the action slot
+occupied forever, silently ignoring every later tap, and leave steering stuck at its last
+value; pointers are now dropped on blur and on hide, and a stale action pointer can be taken
+over after 1.2s. And a mouse-clicked button kept focus, so a later Space could have activated
+it (on RUN AGAIN, that would restart the run); focus is now dropped after pointer-driven
+clicks only, so keyboard navigation still works. In Chrome the existing `preventDefault` on
+keydown already suppressed the activation, so this one was never reachable here — it is
+insurance for browsers that behave differently.
+
+**114/114 assertions pass** (50 feel, 32 touch, 25 verify, 7 frameinput). Zero console
+errors, zero warnings.
 
 ---
 
