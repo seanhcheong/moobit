@@ -356,8 +356,8 @@ const TUNING = {
     posFreq: 9.0,        // rad/s spring (critically damped) for position
     lookFreq: 6.0,       // softer spring for the look-at => trails body, leads motion
     lead: 0.30,          // s of velocity lead baked into the look target
-    offLand: [0.0, 4.45, 7.90],    // landscape offset from the player
-    offPort: [0.0, 6.05,  6.95],   // portrait: higher and closer => belt reads as a corridor
+    offLand: [0.0, 4.20, 7.35],    // landscape offset from the player
+    offPort: [0.0, 5.80,  6.55],   // portrait: higher and closer => belt reads as a corridor
     lookYLand: 1.20, lookYPort: 0.80,
     hazardPull: 3.60,    // camera slides back as the rear lip closes in
     shakeDecay: 11.0, shakeFreq: 34.0, shakePerImpulse: 0.028, shakeMax: 0.60,
@@ -620,22 +620,28 @@ function buildShellTex(){
   base.ctx.globalAlpha=1;
   TEX.shellPlain = finishTex(base.cv,{srgb:true});
 
-  /* body skin: LatheGeometry places u=0 at +Z, so the texture seam runs up the character's
-     back — a band at the texture edges paints a dorsal stripe up over the top, and a band
-     at u=0.5 paints a cream belly panel. Colour blocking for zero extra draw calls. */
+  /* body skin: LatheGeometry puts u=0 at +Z and v=0 at the bottom of the profile, so u=0.5
+     is the front and v runs up the belly. That gives us a penguin's bib for free: a cream
+     panel centred on the front, widest at the belly, narrowing to a throat and stopping
+     under the beak. Painted row by row so the shape is a real bib, not a stripe. */
   const {cv,ctx}=mkCanvas(S,S);
   ctx.drawImage(base.cv,0,0);
-  const belly = ctx.createLinearGradient(S*0.30,0,S*0.70,0);
-  belly.addColorStop(0,'rgba(255,246,222,0)'); belly.addColorStop(0.24,'rgba(255,246,222,0.95)');
-  belly.addColorStop(0.76,'rgba(255,246,222,0.95)'); belly.addColorStop(1,'rgba(255,246,222,0)');
-  ctx.fillStyle=belly; ctx.fillRect(Math.floor(S*0.30),0,Math.ceil(S*0.40),S);
-  const stripe=(x0,x1)=>{
-    const g=ctx.createLinearGradient(x0,0,x1,0);
-    g.addColorStop(0,'rgba(255,92,122,0)'); g.addColorStop(0.34,'rgba(255,92,122,0.97)');
-    g.addColorStop(0.66,'rgba(255,92,122,0.97)'); g.addColorStop(1,'rgba(255,92,122,0)');
-    ctx.fillStyle=g; ctx.fillRect(x0,0,x1-x0,S);
-  };
-  stripe(-S*0.042, S*0.042); stripe(S*0.958, S*1.042);
+  const BIB_TOP = 0.78;
+  for (let py=0; py<S; py++){
+    const v = 1 - (py+0.5)/S;                       // v=0 at the bottom pole, 1 at the crown
+    if (v > BIB_TOP) continue;
+    const t = v/BIB_TOP;                            // 0 belly-bottom, 1 throat
+    const halfW = 0.212*(1 - 0.40*t*t)*Math.min(1, (1-t)*7.0 + 0.18);
+    const a = 0.95*smooth(clamp01((BIB_TOP - v)/0.10));
+    if (halfW <= 0.004 || a <= 0.01) continue;
+    const x0 = (0.5-halfW)*S, x1 = (0.5+halfW)*S;
+    const g = ctx.createLinearGradient(x0,0,x1,0);
+    g.addColorStop(0,   'rgba(255,246,222,0)');
+    g.addColorStop(0.16,'rgba(255,246,222,'+a.toFixed(3)+')');
+    g.addColorStop(0.84,'rgba(255,246,222,'+a.toFixed(3)+')');
+    g.addColorStop(1,   'rgba(255,246,222,0)');
+    ctx.fillStyle=g; ctx.fillRect(x0, py, x1-x0, 1);
+  }
   TEX.shell = finishTex(cv,{srgb:true});
 
   const f = mkCanvas(S,S);
@@ -860,7 +866,7 @@ function physMat(o){
   }, o));
   return m;
 }
-/* Injects a silhouette-edge glow. This is what makes the bean read as squishy. */
+/* Injects a silhouette-edge glow. This is what makes the shell read as soft and squishy. */
 function addRim(mat, color, strength, power){
   mat.userData.rim = { value: new THREE.Vector4(0,0,0,0) };
   const c = col(color);
@@ -952,6 +958,45 @@ function bakeAO(geo, {axis='y', lo=-1, hi=1, dark=0.55, cavity=0}={}){
   return geo;
 }
 
+/* teardrop paddle: full width at the top, tapering to a soft point at the bottom.
+   This is the flipper; scaled down it is a crest feather, rotated it is the tail. */
+function paddleGeo(w, h, d, taper){
+  const g = new THREE.SphereGeometry(1, 14, 12), p = g.attributes.position;
+  const k = taper === undefined ? 0.80 : taper;
+  for (let i=0;i<p.count;i++){
+    const y = p.getY(i), t = clamp01((1 - y)*0.5);      // 0 at the top, 1 at the tip
+    const sc = 1 - k*Math.pow(t, 1.45);
+    p.setXYZ(i, p.getX(i)*sc*w, y*h, p.getZ(i)*sc*d);
+  }
+  g.computeVertexNormals(); weldNormals(g);
+  return g;
+}
+/* soft beak: an ellipsoid pinched toward its tip (-Z is forward) */
+function beakGeo(w, h, len){
+  const g = new THREE.SphereGeometry(1, 14, 10), p = g.attributes.position;
+  for (let i=0;i<p.count;i++){
+    const z = p.getZ(i), t = clamp01((1 - z)*0.5);
+    const sc = 1 - 0.44*Math.pow(t, 1.70);        // blunt penguin beak, not a needle
+    p.setXYZ(i, p.getX(i)*sc*w, p.getY(i)*sc*h, z*len);
+  }
+  g.computeVertexNormals(); weldNormals(g);
+  return g;
+}
+/* bake a two-tone gradient into vertex colours, times a soft AO term */
+function bakeGradient(geo, cLo, cHi, lo, hi, dark){
+  const p = geo.attributes.position, n = p.count, out = new Float32Array(n*3);
+  const a = col(cLo), b = col(cHi);
+  for (let i=0;i<n;i++){
+    const t = smooth(clamp01(invLerp(lo, hi, p.getY(i))));
+    const sh = lerp(dark === undefined ? 0.74 : dark, 1.0, t);
+    out[i*3]   = lerp(a.r, b.r, t)*sh;
+    out[i*3+1] = lerp(a.g, b.g, t)*sh;
+    out[i*3+2] = lerp(a.b, b.b, t)*sh;
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(out,3));
+  return geo;
+}
+
 /* =====================================================================================
    8b. GEOMETRY MERGE — each obstacle collapses to one or two draw calls.
    Part tint and baked AO both ride in the vertex colours (no SSAO anywhere in this game).
@@ -1008,21 +1053,26 @@ const MTX = (x,y,z, rx,ry,rz, sx,sy,sz)=>{
 };
 
 /* =====================================================================================
-   9. THE CHARACTER — an original chunky bean. Built once, posed procedurally forever.
-   Local space: origin at the feet, front faces -Z, up is +Y.
+   9. THE CHARACTER — an original chunky penguin. One continuous egg, no neck, teardrop
+   flippers off the upper third, tiny feet poking out the front. Built once, posed
+   procedurally forever. Local space: origin at the feet, front faces -Z, up is +Y.
    ===================================================================================== */
 const ANIM = {
-  strideRate: 1.62,     // radians of leg phase per unit of distance travelled
-  legAmp: 0.86, armAmp: 0.66,
-  bobAmp: 0.058, swayAmp: 0.082, swayRoll: 0.062,
+  strideRate: 2.10,     // radians of leg phase per unit travelled — small, fast penguin steps
+  legAmp: 0.52,         // feet paddle rather than stride
+  armAmp: 0.46,         // flippers swing gently fore-aft...
+  flareBase: 0.42, flareSpeed: 0.44,   // ...and flare outward the faster you go
+  bobAmp: 0.052, swayAmp: 0.118, swayRoll: 0.088,   // the waddle lives here
   blendFast: 12.0,      // 1/s for ordinary state changes (~83ms)
 };
+const BODY_Y = 0.86;    // centre of the egg in rig space; the ragdoll pivots about this
 
 function buildCharacter(){
-  const root = new THREE.Group();                 // world position only
-  const rotG = new THREE.Group();  root.add(rotG); // full orientation (quaternion)
-  const sqG  = new THREE.Group();  rotG.add(sqG);  // squash & stretch
-  const bodyG= new THREE.Group();  sqG.add(bodyG); // bob + waddle sway
+  const root = new THREE.Group();                  // world position only
+  const flatG= new THREE.Group();  root.add(flatG); // world-vertical squash (belly slides)
+  const rotG = new THREE.Group();  flatG.add(rotG); // full orientation (quaternion)
+  const sqG  = new THREE.Group();  rotG.add(sqG);   // squash & stretch, body-local
+  const bodyG= new THREE.Group();  sqG.add(bodyG);  // bob + waddle sway
 
   /* ---- materials ---- */
   const matShell = addRim(physMat({
@@ -1030,94 +1080,85 @@ function buildCharacter(){
     sheen:0.62, sheenColor:col(C.cream), sheenRoughness:0.55, envMapIntensity:0.78,
     clearcoat:0.14, clearcoatRoughness:0.72,
   }), '#ffe6a8', 0.34, 2.7);
-  const matAccent = addRim(physMat({
-    map:TEX.fabric, roughness:0.86, sheen:0.40, sheenColor:col('#ffd9e2'), envMapIntensity:0.55,
-  }), '#ffb7c6', 0.20, 3.0);
-  const matDark = physMat({ color:col(C.plum), roughness:0.50, clearcoat:0.40, clearcoatRoughness:0.42, envMapIntensity:0.9 });
-  const matBoot = physMat({ color:col(C.mint), roughness:0.44, clearcoat:0.55, clearcoatRoughness:0.30, envMapIntensity:1.0 });
-  const matEye  = physMat({ color:col('#181233'), roughness:0.14, clearcoat:1.0, clearcoatRoughness:0.06, envMapIntensity:1.4 });
+  const matFlipper = addRim(physMat({
+    map:TEX.shellPlain, vertexColors:true, roughness:0.52,
+    clearcoat:0.32, clearcoatRoughness:0.45, envMapIntensity:0.9,
+  }), '#ffd79a', 0.22, 2.9);
+  const matFoot = physMat({ color:col(C.ember), roughness:0.58, clearcoat:0.18, clearcoatRoughness:0.45, envMapIntensity:0.55 });
+  const matTrim = physMat({ vertexColors:true, roughness:0.40, clearcoat:0.45, clearcoatRoughness:0.28, envMapIntensity:1.0 });
+  const matCrest = physMat({ map:TEX.fabric, color:col(C.ember), roughness:0.86, sheen:0.35, sheenColor:col(C.cream), envMapIntensity:0.5 });
+  const matEye  = physMat({ color:col('#14102a'), roughness:0.22, clearcoat:0.85, clearcoatRoughness:0.10, envMapIntensity:0.35 });
   const matGlint= physMat({ color:col('#ffffff'), roughness:0.10, emissive:col('#ffffff'), emissiveIntensity:0.35 });
-  const matChrome=physMat({ color:col(C.mint), map:TEX.metal, metalness:0.45, roughness:0.42, envMapIntensity:0.85 });
-  const matLimb = addRim(physMat({
-    map:TEX.shellPlain, roughness:0.60,
-    sheen:0.55, sheenColor:col(C.cream), sheenRoughness:0.55, envMapIntensity:0.78,
-  }), '#ffe6a8', 0.30, 2.7);
 
-  /* ---- bean shell ---- */
-  const BEAN_Y = 1.02, BEAN_H = 0.60;
-  const beanGeo = bakeAO(latheFromProfile([
-    [0.000,-0.600],[0.255,-0.588],[0.448,-0.520],[0.572,-0.382],[0.626,-0.160],
-    [0.626, 0.104],[0.574, 0.322],[0.462, 0.480],[0.258, 0.576],[0.000, 0.600],
-  ], 26, 5), {axis:'y', lo:-0.62, hi:0.36, dark:0.60});
-  const shell = new THREE.Mesh(beanGeo, matShell);
-  shell.position.y = BEAN_Y; shell.castShadow = true;
+  /* ---- the body: one egg, widest low, doming straight into the head ---- */
+  const bodyGeo = bakeAO(latheFromProfile([
+    [0.000,-0.755],[0.229,-0.700],[0.359,-0.610],[0.435,-0.500],[0.481,-0.380],
+    [0.498,-0.250],[0.500,-0.120],[0.494, 0.010],[0.481, 0.140],[0.458, 0.265],
+    [0.431, 0.385],[0.408, 0.500],[0.385, 0.610],[0.321, 0.700],[0.176, 0.752],
+    [0.000, 0.762],
+  ], 28, 5), {axis:'y', lo:-0.78, hi:0.42, dark:0.58});
+  const shell = new THREE.Mesh(bodyGeo, matShell);
+  shell.position.y = BODY_Y; shell.castShadow = true;
   bodyG.add(shell);
 
-  /* ---- costume: waist band, chest patch, neck scarf, cape ---- */
-  /* costume: waist band + chest patch + emblem collapse into a single draw call */
-  matAccent.vertexColors = true;
-  const costume = new THREE.Mesh(mergeGeos([
-    {geo:new THREE.CylinderGeometry(0.575, 0.625, 0.22, 26, 1, true), matrix:MTX(0,0.63,0), tint:'#ffffff', uv:[3,1]},
-    {geo:new THREE.SphereGeometry(0.235, 16, 12), matrix:MTX(0,1.00,-0.475, 0,0,0, 1.0,0.80,0.34), tint:'#ffffff', uv:[1,1]},
-    {geo:new THREE.TorusGeometry(0.115, 0.042, 8, 18), matrix:MTX(0,1.01,-0.565), tint:C.mint, uv:[3,1]},
-  ]), matAccent);
-  bodyG.add(costume);
+  /* ---- beak and tail: one draw call, tinted per part ---- */
+  const trim = new THREE.Mesh(mergeGeos([
+    {geo: beakGeo(0.105, 0.098, 0.180), matrix: MTX(0, 1.262, -0.495, -0.15,0,0), tint:C.ember},
+    /* the tail is a shaded extension of the body, not a contrasting patch: seen face-on
+       from the game camera a dark tail reads as a hole punched in the silhouette */
+    {geo: paddleGeo(0.140, 0.265, 0.058), matrix: MTX(0, 0.430, 0.360, 1.50,0,0), tint:'#f2c33e',
+     ao:{lo:0.30, hi:0.52, dark:0.66}},
+  ]), matTrim);
+  trim.castShadow = true; bodyG.add(trim);
 
-  /* cape — this is the character's read from a camera that sits above and behind */
-  const capeG = new THREE.PlaneGeometry(0.80, 0.80, 6, 5);
-  const capeBase = new Float32Array(capeG.attributes.position.array);
-  const cape = new THREE.Mesh(capeG, new THREE.MeshPhysicalMaterial({
-    map:TEX.fabric, roughness:0.86, side:THREE.DoubleSide, envMapIntensity:0.55,
-    sheen:0.35, sheenColor:col('#ffd9e2'),
-  }));
-  cape.position.set(0, 1.24, 0.415); cape.castShadow = true; bodyG.add(cape);
+  /* ---- crest: two soft feathers on a pivot, so they keep springing after the head stops ---- */
+  const crestG = new THREE.Group(); crestG.position.set(0, 1.470, 0.010); bodyG.add(crestG);
+  const featherGeo = paddleGeo(0.062, 0.200, 0.038, 0.88);
+  const crest = new THREE.Mesh(mergeGeos([
+    {geo: featherGeo, matrix: MTX(-0.092, 0.115, 0.010, 0.92, 0,  0.34), tint:'#ffffff'},
+    {geo: featherGeo, matrix: MTX( 0.092, 0.115, 0.010, 0.92, 0, -0.34), tint:'#ffffff'},
+  ]), matCrest);
+  crest.castShadow = true; crestG.add(crest);
 
-  /* ---- eyes ---- */
-  /* both eyes in one mesh, built around the eye line so a Y-squash reads as a blink */
-  const EY = 1.250, EZ = -0.495;
-  const eyeG = new THREE.SphereGeometry(0.126, 14, 12);
+  /* ---- eyes: one mesh built around the eye line, so a Y-squash reads as a blink ---- */
+  const EY = 1.348, EZ = -0.330;
+  const eyeG = new THREE.SphereGeometry(0.083, 14, 12);
   const eyes = new THREE.Mesh(mergeGeos([
-    {geo:eyeG, matrix:MTX(-0.215,0,0, 0,0,0, 1,1,0.62), tint:'#ffffff'},
-    {geo:eyeG, matrix:MTX( 0.215,0,0, 0,0,0, 1,1,0.62), tint:'#ffffff'},
+    {geo:eyeG, matrix:MTX(-0.139,0,0, 0,0,0, 1,1,0.66), tint:'#ffffff'},
+    {geo:eyeG, matrix:MTX( 0.139,0,0, 0,0,0, 1,1,0.66), tint:'#ffffff'},
   ]), matEye);
   eyes.position.set(0, EY, EZ); bodyG.add(eyes);
-  const glintG = new THREE.SphereGeometry(0.031, 8, 6);
+  const glintG = new THREE.SphereGeometry(0.022, 8, 6);
   const glints = new THREE.Mesh(mergeGeos([
-    {geo:glintG, matrix:MTX(-0.252, 1.294, -0.573), tint:'#ffffff'},
-    {geo:glintG, matrix:MTX( 0.178, 1.294, -0.573), tint:'#ffffff'},
+    {geo:glintG, matrix:MTX(-0.152, 1.378, -0.384), tint:'#ffffff'},
+    {geo:glintG, matrix:MTX( 0.126, 1.378, -0.384), tint:'#ffffff'},
   ]), matGlint);
   bodyG.add(glints);
 
-  /* ---- antenna ---- */
-  const antG = new THREE.Group(); antG.position.set(0, 1.585, 0.03); bodyG.add(antG);
-  const stalk = new THREE.Mesh(new THREE.CylinderGeometry(0.026, 0.034, 0.24, 8), matDark);
-  stalk.position.y = 0.12; antG.add(stalk);
-  const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.082, 12, 10), matChrome);
-  bulb.position.y = 0.275; bulb.castShadow = true; antG.add(bulb);
-
-  /* ---- limbs ---- */
-  function makeArm(side){
+  /* ---- flippers: teardrop paddles, sun at the shoulder fading to plum at the tip ---- */
+  function makeFlipper(side){
     const pivot = new THREE.Group();
-    pivot.position.set(0.545*side, 1.115, 0.0);
-    const upper = new THREE.Mesh(new THREE.CapsuleGeometry(0.132, 0.22, 6, 12), matLimb);
-    upper.position.y = -0.16; upper.castShadow = true; pivot.add(upper);
-    const hand = new THREE.Mesh(new THREE.SphereGeometry(0.163, 14, 11), matDark);
-    hand.position.y = -0.335; hand.castShadow = true; pivot.add(hand);
+    pivot.position.set(0.428*side, 1.062, 0.020);
+    const geo = bakeGradient(paddleGeo(0.158, 0.318, 0.088), C.ember, C.sun, -0.10, 0.24, 0.84);
+    const pad = new THREE.Mesh(geo, matFlipper);
+    pad.position.y = -0.288; pad.castShadow = true;
+    pivot.add(pad);
     bodyG.add(pivot);
     return pivot;
   }
-  function makeLeg(side){
+  /* ---- feet: stubby pads that poke out from under the belly. Barely any leg. ---- */
+  function makeFoot(side){
     const pivot = new THREE.Group();
-    pivot.position.set(0.225*side, 0.585, 0.0);
-    const thigh = new THREE.Mesh(new THREE.CapsuleGeometry(0.147, 0.17, 6, 12), matDark);
-    thigh.position.y = -0.15; thigh.castShadow = true; pivot.add(thigh);
-    const bootG = new THREE.Group(); bootG.position.y = -0.325; pivot.add(bootG);
-    const boot = new THREE.Mesh(roundedBox(0.34, 0.20, 0.46, 0.095, 3), matBoot);
-    boot.position.set(0, 0, -0.075); boot.castShadow = true; bootG.add(boot);
-    return { pivot, boot:bootG };
+    pivot.position.set(0.205*side, 0.300, -0.020);
+    const padG = new THREE.Group(); padG.position.y = -0.235; pivot.add(padG);
+    const pad = new THREE.Mesh(roundedBox(0.290, 0.128, 0.400, 0.056, 3), matFoot);
+    pad.position.set(0, 0, -0.235); pad.rotation.y = -0.19*side; pad.castShadow = true;
+    padG.add(pad);
+    return { pivot, boot:padG };
   }
-  const armL = makeArm(-1), armR = makeArm(1);
-  const legL = makeLeg(-1), legR = makeLeg(1);
+  const armL = makeFlipper(-1), armR = makeFlipper(1);
+  const legL = makeFoot(-1), legR = makeFoot(1);
+  bodyG.add(legL.pivot, legR.pivot);
 
   /* blob / contact shadow, always on: real shadows sit on top of it when enabled */
   const blob = new THREE.Mesh(new THREE.PlaneGeometry(1.9,1.9), new THREE.MeshBasicMaterial({
@@ -1127,9 +1168,9 @@ function buildCharacter(){
   blob.rotation.x = -Math.PI/2; blob.renderOrder = 2;
 
   return {
-    root, rotG, sqG, bodyG, shell, costume, cape, capeG, capeBase,
-    eyes, glints, antG, bulb, armL, armR, legL, legR, blob,
-    mats:{ matShell, matAccent, matDark, matBoot, matEye, matChrome, matLimb },
+    root, flatG, rotG, sqG, bodyG, shell, trim, crestG, crest,
+    eyes, glints, armL, armR, legL, legR, blob,
+    mats:{ matShell, matFlipper, matFoot, matTrim, matCrest, matEye },
   };
 }
 
@@ -1137,83 +1178,74 @@ const rig = buildCharacter();
 scene.add(rig.root, rig.blob);
 
 /* ---- pose application: everything visual is derived, nothing is keyframed ---------- */
-const POSE_TMP = { antX:0, antZ:0, antVX:0, antVZ:0, capeT:0 };
+const POSE_TMP = { crX:0, crZ:0, crVX:0, crVZ:0 };
 
 function applyPose(p, dt){
   const r = rig;
   r.root.position.set(p.x, p.y, p.z);
-  r.root.quaternion.set(p.qx, p.qy, p.qz, p.qw);
+  r.root.quaternion.identity();
+  r.rotG.quaternion.set(p.qx, p.qy, p.qz, p.qw);
 
-  /* squash / stretch (and the pivot shift that lets a ragdoll tumble about its middle) */
+  /* world-vertical flatten: a belly-sliding penguin squashes against the belt */
+  r.flatG.scale.set(1 + (1-p.flat)*0.45, p.flat, 1 + (1-p.flat)*0.30);
+
+  /* squash / stretch, plus the pivot shift that lets a ragdoll tumble about its middle */
   r.sqG.scale.set(p.sx, p.sy, p.sz);
   r.sqG.position.y = p.pivot;
 
-  const W = p.w;                               // blend weights (run / air / dive / get / rag)
+  const W = p.w;
   const spN = clamp01(p.speedN);
   const ph  = p.phase;
-  const sinP = Math.sin(ph), cosP = Math.cos(ph);
+  const sinP = Math.sin(ph);
 
-  /* ---- torso: bob on 2x leg frequency, lateral hip sway on 1x (the waddle) ---- */
+  /* ---- torso: bob on 2x the step frequency, lateral sway on 1x — this is the waddle ---- */
   const bob  = Math.sin(ph*2)*ANIM.bobAmp*spN;
   const sway = sinP*ANIM.swayAmp*spN;
   r.bodyG.position.set(sway*W.run, bob*W.run + p.breath, 0);
   r.bodyG.rotation.z = -sinP*ANIM.swayRoll*spN*W.run;
-  r.bodyG.rotation.y = sinP*0.055*spN*W.run;
+  r.bodyG.rotation.y = sinP*0.075*spN*W.run;
 
   /* ---- limb targets per state, then weighted ---- */
-  const legAmp = ANIM.legAmp*(0.34+0.66*spN), armAmp = ANIM.armAmp*(0.30+0.70*spN);
+  const legAmp = ANIM.legAmp*(0.36+0.64*spN), armAmp = ANIM.armAmp*(0.30+0.70*spN);
   const runHipL =  sinP*legAmp, runHipR = -sinP*legAmp;
-  const runShL  = -sinP*armAmp*0.82, runShR = sinP*armAmp*0.82;
-  const runShZ  = 0.16 + 0.26*spN;
+  const runShL  = -sinP*armAmp, runShR = sinP*armAmp;
+  const runFlare = ANIM.flareBase + ANIM.flareSpeed*spN;
 
-  // airborne: legs tuck, arms out for balance
-  const airHipL = 0.52 - p.vyN*0.22, airHipR = 0.40 + p.vyN*0.20;
-  const airShL = -0.42, airShR = -0.30, airShZ = 0.95;
-  // dive: rigid arms-forward superman
-  const dvHip = 0.26, dvSh = -1.66, dvShZ = 0.10;
-  // get-up: push off the belt
+  // airborne: feet tuck, flippers wide out for balance
+  const airHipL = 0.46 - p.vyN*0.20, airHipR = 0.34 + p.vyN*0.18;
+  const airShL = -0.30, airShR = -0.22, airFlare = 1.05;
+  // dive: a rigid toboggan — flippers swept back along the body
+  const dvHip = 0.30, dvSh = -1.42, dvFlare = 0.12;
+  // get-up: push off the belt with both flippers
   const gWob = Math.sin(p.getT*26.0)*(1-clamp01(p.getT*1.6))*0.30;
-  const gHip = 0.72 + gWob, gSh = -0.55 + gWob*1.6, gShZ = 0.52;
+  const gHip = 0.66 + gWob, gSh = -0.62 + gWob*1.6, gFlare = 0.62;
   // ragdoll: limp, slow drift
-  const rHip = 0.30 + Math.sin(ph*0.30)*0.42, rSh = 0.24 + Math.cos(ph*0.27)*0.62, rShZ = 0.62;
+  const rHip = 0.26 + Math.sin(ph*0.30)*0.38, rSh = 0.20 + Math.cos(ph*0.27)*0.55, rFlare = 0.66;
 
   const hipL = W.run*runHipL + W.air*airHipL + W.dive*dvHip + W.get*gHip + W.rag*rHip;
   const hipR = W.run*runHipR + W.air*airHipR + W.dive*dvHip + W.get*(gHip*0.82) + W.rag*(rHip*0.7);
   const shL  = W.run*runShL  + W.air*airShL  + W.dive*dvSh  + W.get*gSh   + W.rag*rSh;
   const shR  = W.run*runShR  + W.air*airShR  + W.dive*dvSh  + W.get*gSh   + W.rag*(rSh*0.8);
-  const shZ  = W.run*runShZ  + W.air*airShZ  + W.dive*dvShZ + W.get*gShZ  + W.rag*rShZ;
+  const flare= W.run*runFlare+ W.air*airFlare+ W.dive*dvFlare+ W.get*gFlare + W.rag*rFlare;
 
   r.legL.pivot.rotation.x = hipL; r.legR.pivot.rotation.x = hipR;
-  r.legL.boot.rotation.x = -hipL*0.42 + (W.dive+W.rag)*0.25;
-  r.legR.boot.rotation.x = -hipR*0.42 + (W.dive+W.rag)*0.25;
+  r.legL.boot.rotation.x = -hipL*0.55 + (W.dive+W.rag)*0.30;   // pads stay flattish to the belt
+  r.legR.boot.rotation.x = -hipR*0.55 + (W.dive+W.rag)*0.30;
   r.armL.rotation.x = shL; r.armR.rotation.x = shR;
-  r.armL.rotation.z =  shZ; r.armR.rotation.z = -shZ;
+  r.armL.rotation.z = -flare; r.armR.rotation.z = flare;       // positive flare splays outward
 
-  /* ---- antenna: springy secondary motion, plus an idle twitch ---- */
-  const tgtX = clamp(-p.accZ*0.014 - p.vyN*0.10, -0.7, 0.7) + p.twitch*0.5;
-  const tgtZ = clamp(-p.accX*0.014, -0.7, 0.7) - r.bodyG.rotation.z*1.5;
-  POSE_TMP.antVX += (tgtX - POSE_TMP.antX)*72*dt - POSE_TMP.antVX*10*dt;
-  POSE_TMP.antVZ += (tgtZ - POSE_TMP.antZ)*72*dt - POSE_TMP.antVZ*10*dt;
-  POSE_TMP.antX += POSE_TMP.antVX*dt; POSE_TMP.antZ += POSE_TMP.antVZ*dt;
-  r.antG.rotation.set(POSE_TMP.antX, 0, POSE_TMP.antZ);
+  /* ---- crest: springy secondary motion, plus an idle twitch ---- */
+  const tgtX = clamp(-p.accZ*0.013 - p.vyN*0.12, -0.7, 0.7) + p.twitch*0.5;
+  const tgtZ = clamp(-p.accX*0.013, -0.7, 0.7) - r.bodyG.rotation.z*1.5;
+  POSE_TMP.crVX += (tgtX - POSE_TMP.crX)*76*dt - POSE_TMP.crVX*10.5*dt;
+  POSE_TMP.crVZ += (tgtZ - POSE_TMP.crZ)*76*dt - POSE_TMP.crVZ*10.5*dt;
+  POSE_TMP.crX += POSE_TMP.crVX*dt; POSE_TMP.crZ += POSE_TMP.crVZ*dt;
+  r.crestG.rotation.set(POSE_TMP.crX, 0, POSE_TMP.crZ);
 
   /* ---- blink (eyes squash to a slit) ---- */
   const bl = 1 - p.blink*0.92;
   r.eyes.scale.set(1.0 + p.blink*0.16, bl, 1.0);
   r.glints.visible = p.blink < 0.55;
-
-  /* ---- cape flutter: written into a cached buffer, zero allocation ---- */
-  POSE_TMP.capeT += dt*(3.4 + spN*9.0);
-  const pos = r.capeG.attributes.position, base = r.capeBase, n = pos.count;
-  const wind = 0.30 + spN*0.86 + W.dive*0.6;
-  for (let i=0;i<n;i++){
-    const bx = base[i*3], by = base[i*3+1];
-    const t = clamp01((0.40 - by)/0.80);                 // 0 at the collar, 1 at the hem
-    const f = Math.sin(POSE_TMP.capeT + bx*3.1 + by*2.0)*0.070*t;
-    pos.setXYZ(i, bx*(1.0 + t*0.16) + f*0.55, by*0.94 - t*t*0.10, t*t*(0.14 + wind*0.26) + f*0.45);
-  }
-  pos.needsUpdate = true;
-  r.cape.rotation.x = -0.10 - wind*0.22;
 
   /* ---- blob shadow ---- */
   const gy = p.groundY;
@@ -1554,17 +1586,17 @@ function buildObstacleDefs(){
     const foot = roundedBox(0.72, 0.20, 1.10, 0.09, 2);
     const lamp = new THREE.SphereGeometry(0.13, 10, 8);
     const geo = mergeGeos([
-      {geo:bar, matrix:MTX(0,1.32,0), tint:C.blossom, uv:[4.4,0.30], ao:{lo:1.0,hi:1.6,dark:0.7}},
-      {geo:post,matrix:MTX(-(REF_HALF+0.10),0.72,0), tint:C.steel, uv:[0.3,1.2], ao:{lo:0,hi:1.5,dark:0.45}},
-      {geo:post,matrix:MTX( (REF_HALF+0.10),0.72,0), tint:C.steel, uv:[0.3,1.2], ao:{lo:0,hi:1.5,dark:0.45}},
+      {geo:bar, matrix:MTX(0,1.42,0), tint:C.blossom, uv:[4.4,0.30], ao:{lo:1.1,hi:1.7,dark:0.7}},
+      {geo:post,matrix:MTX(-(REF_HALF+0.10),0.80,0, 0,0,0, 1,1.10,1), tint:C.steel, uv:[0.3,1.3], ao:{lo:0,hi:1.6,dark:0.45}},
+      {geo:post,matrix:MTX( (REF_HALF+0.10),0.80,0, 0,0,0, 1,1.10,1), tint:C.steel, uv:[0.3,1.3], ao:{lo:0,hi:1.6,dark:0.45}},
       {geo:foot,matrix:MTX(-(REF_HALF+0.10),0.11,0), tint:C.plum, uv:[0.6,0.2], ao:{lo:0,hi:0.3,dark:0.5}},
       {geo:foot,matrix:MTX( (REF_HALF+0.10),0.11,0), tint:C.plum, uv:[0.6,0.2], ao:{lo:0,hi:0.3,dark:0.5}},
-      {geo:lamp,matrix:MTX(-1.4,1.03,-0.30), tint:C.mint},
-      {geo:lamp,matrix:MTX( 1.4,1.03,-0.30), tint:C.mint},
-      {geo:lamp,matrix:MTX( 0.0,1.03,-0.30), tint:C.mint},
+      {geo:lamp,matrix:MTX(-1.4,1.13,-0.30), tint:C.mint},
+      {geo:lamp,matrix:MTX( 1.4,1.13,-0.30), tint:C.mint},
+      {geo:lamp,matrix:MTX( 0.0,1.13,-0.30), tint:C.mint},
     ]);
     OBS_DEF[OT.HIGH] = { geo, mat:OM.body(TEX.chevPink), full:true,
-      hit:{ y0:1.02, y1:1.62, halfX:REF_HALF+0.4, halfZ:0.66 } };
+      hit:{ y0:1.12, y1:1.72, halfX:REF_HALF+0.4, halfZ:0.66 } };
   }
   /* ---------- 2: swinging pendulum ---------- */
   {
@@ -1690,16 +1722,17 @@ function updatePlayArea(){
    16. PLAYER
    ===================================================================================== */
 const ST = { RUN:0, DIVE:1, SLIDE:2, GETUP:3, RAG:4, BLEND:5 };
+const RAG_FLOOR = 0.63;   // body half-width: how high the centre sits when it lies on its side
 const J = TUNING.jump, MV = TUNING.move, DV = TUNING.dive, RG = TUNING.ragdoll;
 
 function mkPose(){
-  return { x:0,y:0,z:0, qx:0,qy:0,qz:0,qw:1, sx:1,sy:1,sz:1, pivot:0,
+  return { x:0,y:0,z:0, qx:0,qy:0,qz:0,qw:1, sx:1,sy:1,sz:1, pivot:0, flat:1,
     phase:0, speedN:0, vyN:0, accX:0, accZ:0, breath:0, blink:0, twitch:0, getT:0, groundY:0,
     w:{run:1,air:0,dive:0,get:0,rag:0} };
 }
 function copyPose(d,s){
   d.x=s.x; d.y=s.y; d.z=s.z; d.qx=s.qx; d.qy=s.qy; d.qz=s.qz; d.qw=s.qw;
-  d.sx=s.sx; d.sy=s.sy; d.sz=s.sz; d.pivot=s.pivot;
+  d.sx=s.sx; d.sy=s.sy; d.sz=s.sz; d.pivot=s.pivot; d.flat=s.flat;
   d.phase=s.phase; d.speedN=s.speedN; d.vyN=s.vyN; d.accX=s.accX; d.accZ=s.accZ;
   d.breath=s.breath; d.blink=s.blink; d.twitch=s.twitch; d.getT=s.getT; d.groundY=s.groundY;
   d.w.run=s.w.run; d.w.air=s.w.air; d.w.dive=s.w.dive; d.w.get=s.w.get; d.w.rag=s.w.rag;
@@ -1711,7 +1744,7 @@ const P = {
   grounded:true, airT:0, coyoteT:0, bufferT:0, jumpHeld:false, apexLeft:0, jumped:false,
   state:ST.RUN, stateT:0, getT:0, slideT:0, diveCd:0,
   yaw:0, yawVel:0, roll:0, pitch:0,
-  sqY:1, sqYV:0, sqXZ:1, sqXZV:0,
+  sqY:1, sqYV:0, sqXZ:1, sqXZV:0, flat:1,
   phase:0, speedN:0, breath:0, blinkT:1.8, blink:0, twitchT:4, twitch:0,
   onSlick:false, slickT:0,
   rv:new THREE.Vector3(), rav:new THREE.Vector3(), rq:new THREE.Quaternion(), rcy:0, settleT:0,
@@ -1727,10 +1760,10 @@ function resetPlayer(){
   P.grounded=true; P.airT=0; P.coyoteT=LIVE.coyote; P.bufferT=0; P.jumpHeld=false; P.apexLeft=0; P.jumped=false;
   P.state=ST.RUN; P.stateT=0; P.getT=0; P.slideT=0; P.diveCd=0;
   P.yaw=0; P.yawVel=0; P.roll=0; P.pitch=0;
-  P.sqY=1; P.sqYV=0; P.sqXZ=1; P.sqXZV=0;
+  P.sqY=1; P.sqYV=0; P.sqXZ=1; P.sqXZV=0; P.flat=1;
   P.phase=0; P.speedN=0; P.breath=0; P.blinkT=1.8; P.blink=0; P.twitchT=4; P.twitch=0;
   P.onSlick=false; P.slickT=0; P.settleT=0; P.blendT=0;
-  P.rv.set(0,0,0); P.rav.set(0,0,0); P.rq.identity(); P.rcy=1;
+  P.rv.set(0,0,0); P.rav.set(0,0,0); P.rq.identity(); P.rcy=BODY_Y;
   P.dying=false; P.deadT=0; P.alive=true; P.nearMissChain=0;
   P.w.run=1; P.w.air=0; P.w.dive=0; P.w.get=0; P.w.rag=0;
   P.wt.run=1; P.wt.air=0; P.wt.dive=0; P.wt.get=0; P.wt.rag=0;
@@ -1799,7 +1832,7 @@ function startRagdoll(ix,iy,iz, offX, offY, power){
     P.rv.x += ix; P.rv.y += iy; P.rv.z += iz; return;
   }
   P.state = ST.RAG; P.stateT = 0; P.settleT = 0;
-  P.rcy = P.y + 1.00;
+  P.rcy = P.y + BODY_Y;
   P.rv.set(P.vx + ix, Math.max(P.vy, 0) + iy, P.vz + iz + beltDragNow());
   const sp = RG.spinPerImpulse;
   P.rav.set(
@@ -1848,11 +1881,11 @@ function stepPlayer(dt){
   if (P.state===ST.RAG){
     const g = J.gravityFall*1.06;
     P.rv.y -= g*dt;
-    const onGround = P.rcy <= 0.60 + 0.001;
+    const onGround = P.rcy <= RAG_FLOOR + 0.001;
     P.x += P.rv.x*dt;
     P.z += (P.rv.z + (onGround ? Belt.speed*RG.beltGrab : Belt.speed*B.airDrag*0.5))*dt;
     P.rcy += P.rv.y*dt;
-    const floorY = (P.z > B.rear + 0.4) ? -60 : 0.60;
+    const floorY = (P.z > B.rear + 0.4) ? -60 : RAG_FLOOR;
     if (P.rcy < floorY){
       P.rcy = floorY;
       if (P.rv.y < -1.2){
@@ -1870,7 +1903,7 @@ function stepPlayer(dt){
     _q1.set(P.rav.x*dt*0.5, P.rav.y*dt*0.5, P.rav.z*dt*0.5, 1).normalize();
     P.rq.premultiply(_q1);
     P.x = clamp(P.x, -PLAY.half-1.2, PLAY.half+1.2);
-    P.y = P.rcy - 1.0;
+    P.y = P.rcy - BODY_Y;
     // settle test
     if (P.rcy <= floorY+0.02 && P.rav.length() < RG.settleAng && Math.hypot(P.rv.x,P.rv.y,P.rv.z) < RG.settleVel){
       P.settleT += dt;
@@ -1889,8 +1922,8 @@ function stepPlayer(dt){
     P.rq.slerp(_q1.identity(), clamp01(dt*10.0));
     P.x += P.rv.x*dt*(1-t); P.rv.x *= Math.exp(-6*dt);
     P.z += (P.rv.z*(1-t) + Belt.speed*RG.beltGrab)*dt; P.rv.z *= Math.exp(-6*dt);
-    P.rcy = damp(P.rcy, 1.0, 9, dt);
-    P.y = lerp(0, P.rcy-1.0, 1-t);
+    P.rcy = damp(P.rcy, BODY_Y, 9, dt);
+    P.y = lerp(0, P.rcy-BODY_Y, 1-t);
     P.vx = 0; P.vz = 0; P.vy = 0; P.grounded = true;
     P.yaw = damp(P.yaw, 0, 5, dt); P.roll = damp(P.roll, 0, 8, dt); P.pitch = damp(P.pitch, 0, 8, dt);
     if (P.blendT >= RG.blend){ P.state = ST.GETUP; P.getT = 0; P.y = 0; }
@@ -1924,7 +1957,7 @@ function stepPlayer(dt){
       P.vx = P.vx/sp*ns; P.vz = P.vz/sp*ns;
     }
     P.slideT += dt;
-    if (P.slideT % 0.03 < dt) burstDust(P.x - P.vx*0.06, 0.06, P.z - P.vz*0.06, 0.5, 0.9, '#efe4c8');
+    if (P.slideT % 0.055 < dt) burstDust(P.x - P.vx*0.06, 0.06, P.z - P.vz*0.06, 0.34, 0.85, '#efe4c8');
     if ((Math.hypot(P.vx,P.vz) < DV.slideEndSpd && P.slideT > DV.minSlide) || P.slideT > DV.slideMax){
       P.state = ST.GETUP; P.getT = 0;
     }
@@ -2039,6 +2072,9 @@ function stepPlayer(dt){
     }
   }
 
+  const flatT = (P.state===ST.SLIDE) ? 0.76 : (P.state===ST.DIVE ? 0.90 : 1.0);
+  P.flat = damp(P.flat, flatT, 15, dt);
+
   springScale(dt); stepWeights(dt); stepIdle(dt);
   finishStep(dt, ix, iz);
 }
@@ -2062,7 +2098,8 @@ function writePose(pose, dt){
   pose.sy = P.sqY*(1+stretch);
   pose.sx = P.sqXZ*(1-stretch*0.62);
   pose.sz = pose.sx;
-  pose.pivot = -1.0*P.w.rag;
+  pose.pivot = -BODY_Y*P.w.rag;
+  pose.flat = P.flat;
   _e1.set(P.pitch, P.yaw, P.roll, 'YXZ'); _q2.setFromEuler(_e1);
   if (P.w.rag > 0.0005) _q2.slerp(P.rq, P.w.rag);
   pose.qx=_q2.x; pose.qy=_q2.y; pose.qz=_q2.z; pose.qw=_q2.w;
@@ -2089,7 +2126,7 @@ function lerpPose(a,b,t){
   _q1.slerp(_q2,t);
   o.qx=_q1.x; o.qy=_q1.y; o.qz=_q1.z; o.qw=_q1.w;
   o.sx=lerp(a.sx,b.sx,t); o.sy=lerp(a.sy,b.sy,t); o.sz=lerp(a.sz,b.sz,t);
-  o.pivot=lerp(a.pivot,b.pivot,t);
+  o.pivot=lerp(a.pivot,b.pivot,t); o.flat=lerp(a.flat,b.flat,t);
   o.phase=lerp(a.phase,b.phase,t); o.speedN=lerp(a.speedN,b.speedN,t); o.vyN=lerp(a.vyN,b.vyN,t);
   o.accX=lerp(a.accX,b.accX,t); o.accZ=lerp(a.accZ,b.accZ,t);
   o.breath=lerp(a.breath,b.breath,t); o.blink=lerp(a.blink,b.blink,t); o.twitch=lerp(a.twitch,b.twitch,t);

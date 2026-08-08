@@ -243,6 +243,64 @@ ultrawide. Obstacle lateral extent holds at 0.397 of the play half-width in ever
 **Final: 100/100 assertions pass. Zero console errors and zero console warnings in every
 suite and every viewport.**
 
+## Pass 11 — the character becomes a penguin
+
+| Correctness | Feel | Look | Juice | Performance | Touch |
+|---|---|---|---|---|---|
+| **9** | **9** | **9** | **9** | **9** | **9** |
+
+Reshaped from a bean to a penguin against a supplied reference turnaround. The animation rig
+turned out to be the right rig for it — a waddle is exactly what a phase accumulator with
+lateral sway and counter-swinging limbs produces.
+
+What the reference dictated, and what measuring it changed:
+
+- **Proportions.** My first pass kept the bean's fatness: 0.86 width-to-height against the
+  reference's ~0.54. Measured off the image and reprofiled the lathe to 0.66 — slimmer than
+  the bean, still chunky enough to read at 640×360.
+- **Flippers on the silhouette, not inside it.** Teardrop paddles, tapered in code from a
+  sphere. The first attempt pivoted them at x=0.505 while the body radius there was 0.63, so
+  they were buried; and at rest the dark tip against the belly read as a *gash*. Fixed by
+  moving the pivot out, widening and thickening the paddle, raising the resting flare to
+  0.42 rad, and tipping them in the same ember as the beak and feet so the accents read as
+  one family.
+- **Colour blocking for free.** `LatheGeometry` puts `u = 0` at `+Z`, so the texture seam
+  runs up the character's back and `u = 0.5` is the front. The cream bib is painted row by
+  row into the shell texture as a real bib shape — widest at the belly, narrowing to a
+  throat, stopping under the beak — at zero extra draw calls. The old blossom dorsal stripe
+  is gone; a penguin's back is plain, and the golden back is the loud colour the game camera
+  actually looks at.
+- **A blunt beak.** Pinched 0.70 to a needle it looked right head-on and vanished in profile.
+  Now 0.44 with a sharper falloff: mass all the way to the tip.
+- **The tail had to stop being a patch.** Plum and near-horizontal, seen face-on from a
+  camera 26° above, it read as a hole punched in the silhouette. It is now a shaded
+  body-coloured extension of the lower back, which is what the reference actually shows.
+- **The crest pointed the wrong way.** `rotation.x` negative pitches a feather *forward*, so
+  two ember tufts read as devil horns. Swept back over the crown at +0.92 they read as a
+  crest.
+- **Eyes.** 0.112 radius with `envMapIntensity: 1.4` gave two glossy grey marbles mirroring
+  the sky. Down to 0.083 with env at 0.35 — small, dark, and a single glint each.
+
+Mechanical consequences, all measured rather than assumed:
+
+- The ragdoll pivots about the body centre, which moved from 1.00 to 0.86, and its resting
+  centre height from 0.60 to 0.63 (the new half-width). Both are named constants now.
+- A prone penguin is an egg on its side, so it is *taller* lying down than the bean was.
+  Added a world-vertical flatten group outside the orientation node — a belly slide now
+  squashes against the belt (0.76) rather than the body's own axis, which the existing
+  squash could never do. High bar raised to 1.12–1.72 to match.
+- **Four new clearance gates** in the feel suite, because those heights are now load-bearing:
+  standing into a high bar hits, diving under it passes clean, standing into a sweeper hits,
+  jumping clears a sweeper. All pass.
+- Camera pulled from 7.90 to 7.35 back and 4.45 to 4.20 up, since a narrower character
+  occupies less of the frame.
+- Draw calls went *down*: the bean's costume, cape, antenna, stalk, bulb, two arm meshes and
+  two hand meshes are gone, replaced by body, trim (beak + tail), crest, eyes, glints, two
+  flippers and two feet. **53 in ordinary play, 71 at the hard ceiling.**
+
+**104/104 assertions pass** (47 feel, 32 touch, 25 verify). Zero console errors, zero
+warnings.
+
 ---
 
 ## Residual, stated plainly

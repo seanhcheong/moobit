@@ -1,6 +1,6 @@
 # BELT RUNNER
 
-A chunky bean runs on a giant treadmill. The belt drags the world backward under its feet.
+A chunky penguin runs on a giant treadmill. The belt drags the world backward under its feet.
 Run forward to hold station. Fall behind and the rear lip throws you off. Push too far
 forward and the front roller bounces you back. The belt speeds up. You survive as long as
 you can.
@@ -116,6 +116,13 @@ cp index.html www/ && npx cap sync
 
 ## What is actually in here
 
+**The character** is an original penguin: one continuous egg with no neck, teardrop flippers
+hanging off the upper third, a blunt beak, two crest tufts and stubby feet that poke out from
+under the belly. Its colour blocking is painted into the lathe's own UVs — the seam sits at
+the back and `u = 0.5` is the front, so a cream bib comes free with no extra draw call. The
+beak, flipper tips, crest and feet all share one ember accent, and the golden shell is the
+loud colour because the camera spends its life looking at the character's back.
+
 **Movement** is the whole game. Momentum-based acceleration (~0.21s to top speed), a
 separate deceleration curve that overshoots where you released, a distinct and heavier
 turn acceleration so reversing at speed slides before it commits, smoothed yaw with roll
@@ -192,7 +199,7 @@ Budgets, and what was actually measured (see `CHANGELOG.md` for the method and i
 
 | | Budget | Measured |
 |---|---|---|
-| Draw calls | < 80 | **58–72** — 52 in ordinary play, 71 with the obstacle pool forced to its hard ceiling, across 16:9 / portrait / square / ultrawide |
+| Draw calls | < 80 | **59–72** — 53 in ordinary play, 71 with the obstacle pool forced to its hard ceiling, across 16:9 / portrait / square / ultrawide |
 | Triangles | < 150k | **19k–26k** |
 | Fixed-step CPU cost | — | **0.011–0.037 ms/step** (60 steps/s) |
 | Allocation in the frame loop | zero | **0 bytes** from game code; ~4.5 KB/frame remains inside three.js's own `WebGLRenderer.render()` |
