@@ -445,6 +445,95 @@ hold, 80 seconds of continuous exercise without NaN, and a clean handover back t
 
 ---
 
+## Pass 15 — the three-lane fitness run
+
+The mechanic: three lanes, lunge to change lane, coins on the track, and walls that only come
+down if you do the exercise printed on them. Everything routes through one entry point —
+`Moves.trigger(kind)` — so keys, the on-screen buttons, and anything added later (a camera pose
+detector, say) all speak the same six signals and nothing downstream knows the difference.
+
+New systems: `Coins` is one 48-instance mesh; each `Wall` is a frame, a lit sign, and an
+instanced mesh of brickwork; `Run` owns the lane state, the chain, and the two spawn
+schedulers. Lane locomotion drives X directly at a fixed rate (`laneW / laneTime`) rather than
+through the acceleration model, so a lane change costs the same time at any belt width.
+
+Obstacles were **not** dropped. They still ride the belt in lane mode, snapped to lane centres,
+in the gaps between walls — otherwise six obstacle types and the near-miss scoring would have
+been quietly thrown away by a feature that never asked for them.
+
+### Bugs this pass, all found by assertion rather than by eye
+
+1. **Boot crash from initialisation order** — `Game.resetWorld()` calls `Run.reset()`, which
+   clears the coin pool, but `Coins.init()` was placed later in the boot block. Third instance
+   of this class in the file (after `REF_HALF` and `mergeGeos`/`MTX`); moved the init above
+   `resetWorld` and made `clear()` null-safe so ordering can't bite a fourth time.
+
+2. **Every rep yanked the camera into workout framing.** `Cam.step` decided it was in the gym
+   from `Ex.w > 0.02` — the pose weight — which a one-shot in-run rep also raises. So each
+   lunge and each rep dived the camera from y=4.2 to y=1.6 and pulled it 4 units closer. Split
+   the weight: `Ex.gymW` only rises for the *looping* workout. This one was invisible to every
+   existing assertion and only showed up when I probed the camera through a lane change.
+
+3. **The play area fed back into itself.** `updatePlayArea` measured distance along the camera's
+   own view axis. The camera picks up yaw while tracking a side lane, which shrank the measured
+   distance, which shrank the playable width, which moved the lane centres inward — a converging
+   loop that landed the outer lane 20% closer to the middle than where it started. Measured
+   `laneW` going 3.658 → 2.687 → 3.443 during one lane change. Now measured in the ZY plane,
+   which is yaw-invariant: 6.6 flat across a lane change at every tier.
+
+4. **A lane change turned the penguin 60° sideways.** `atan2(-vx, -vz)` with a 15 u/s lateral
+   rate against 12 u/s forward is a 58° facing target. Capped the yaw at 22° in lane mode and
+   drove the bank straight off the lateral rate instead, so the lean still reads: 15.5–18.3° of
+   roll, inside the brief's 15–20° band.
+
+5. **A partially broken wall showed a hole you were still blocked by.** Bricks were removed
+   left-to-right, opening a visible gap that collision ignored. Rebuilt as stacked courses —
+   full width, one course per rep, taken off the top — and made the remaining height *be* the
+   collider. Grinding a four-course wall to a stub and hopping the last course now works,
+   pays 25 instead of 60, and the HUD says `OR JUMP IT` so it isn't a secret.
+
+6. **A material cloned per wall spawn.** `w.sign.material = w.sign.material.clone()` allocated
+   and leaked a material every time a wall appeared. Each pooled wall owns its material now and
+   the spawn just swaps the map.
+
+7. **Two separate obstacle patterns could seal all three lanes.** The per-pattern check left one
+   lane open within a pattern but nothing stopped an earlier pattern's blocker from closing it.
+   Replaced the boolean lane mask with a per-lane blocker-Z record, checked per item against a
+   16-unit window — comfortably more than a lane change.
+
+8. **Draw calls went to 83 in ultrawide.** Lane geometry plus a forced obstacle pool. Merged the
+   two lane guides into one instanced mesh and capped obstacle actives at 6 in lane mode, where
+   walls own the corridor much of the time anyway. Back to 69–76 at the reachable worst case.
+
+Three failures were my *tests* being wrong, and worth recording because two of them looked
+exactly like product bugs: a lane-timing measurement that captured `laneW` before the camera
+spring had settled; an "obstacles still spawn" count dominated by dead time because the
+simulated player never did any reps; and an off-lane check that flagged frames during
+**hit-stop**, when the simulation is frozen by design and the play area is the only thing
+still moving.
+
+### Scores
+
+| | Pass 14 | Pass 15 |
+|---|---|---|
+| Movement feel | 9 | 9 |
+| Treadmill mechanics | 9 | **10** — walls and coins give the belt something to do besides speed up |
+| Camera | 9 | **10** — bug 2 was a real defect at 9 |
+| Visual polish | 9 | 9 |
+| Performance | 9 | 9 |
+| Mobile | 9 | 9 |
+
+**186/186 assertions pass** (71 feel, 32 touch, 27 verify, 7 frameinput, 49 lane) — 56 of them
+new or reworked this pass, covering lane changes and their clamping, lane-change duration across
+four aspect ratios, coins collected only in your own lane, chain scoring, the right exercise
+chipping a course and the wrong one not, insufficient reps ragdolling you, the stub-hop and its
+bonus, the legibility window against both the rep cadence and the closing speed, obstacles
+still spawning and still covering all six types in lane mode, the corridor never shared, lane
+centres tracked as the playfield breathes, the three-lane seal invariant, and three minutes of
+lane play with no NaN and bounded pools. Zero console errors, zero warnings.
+
+---
+
 ## Residual, stated plainly
 
 1. **No real-GPU fps number.** SwiftShader is the only renderer available in this
@@ -465,3 +554,16 @@ hold, 80 seconds of continuous exercise without NaN, and a clean handover back t
    same world radius covers a slightly larger fraction of it — a deliberate leftover, since
    scaling it laterally would distort its vertical component (which is what makes diving
    under a high bar score).
+5. **Obstacles are thin in lane mode by construction.** 51 spawns over 175 simulated seconds
+   at five tiers, against a wall every 74–112 belt-units that owns the corridor while it is
+   live. That is the intended balance — the wall is the centrepiece and you should not be asked
+   to dodge and to do reps at once — but if you want lane mode to feel like the free-run game
+   with lanes bolted on, `run.wallEvery` is the dial, not the obstacle spawner.
+6. **The wall sign overlaps the HUD cue at close range.** Both sit centred at the top of the
+   frame. By the time they overlap the cue has already told you the exercise and the rep count,
+   so the sign is redundant at that distance rather than lost — but it is an overlap, not a
+   design.
+7. **Lane mode auto-drives the run throttle.** `In.poll` station-keeps for you so your hands are
+   free for lunges and reps, which means the throttle skill from free mode is gone: you die to
+   the belt out-running top speed at the high tiers rather than to your own pacing. That is the
+   right trade for a mode whose input is exercises, and free mode is one toggle away.

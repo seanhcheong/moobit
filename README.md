@@ -1,9 +1,13 @@
 # BELT RUNNER
 
 A chunky penguin runs on a giant treadmill. The belt drags the world backward under its feet.
-Run forward to hold station. Fall behind and the rear lip throws you off. Push too far
-forward and the front roller bounces you back. The belt speeds up. You survive as long as
-you can.
+Fall behind and the rear lip throws you off. Push too far forward and the front roller
+bounces you back. The belt speeds up. You survive as long as you can.
+
+The belt has **three lanes**. You lunge left and right to change lane, collect coins along
+the track, and when a brick wall rolls up with an exercise printed on it you do that
+exercise — squats, push-ups, jumping jacks, burpees — to bring it down course by course
+before it reaches you.
 
 One self-contained `index.html`. No build step, no external assets. Every mesh is generated
 in code, every texture is painted to a `<canvas>` at boot. Desktop keyboard and mobile
@@ -34,9 +38,16 @@ npx serve .          # or: python3 -m http.server 8080
 
 ## Controls
 
+Lane mode is the default. It changes what the movement keys are for: the run throttle holds
+station by itself, and your input is lunges and exercises.
+
 | | Desktop | Touch |
 |---|---|---|
-| Move | `W A S D` or arrows | left half of the screen — relative drag pad, origin wherever your thumb lands, sliding origin so you never run out of travel |
+| Lunge left / right | `A` `D` or `←` `→` | the **← →** buttons |
+| Squat | `S` | **SQUAT** |
+| Push-up | `X` | **PUSH** |
+| Jumping jack | `W` | **JACK** |
+| Burpee | `C` | **BURPEE** |
 | Jump | `Space` (hold for height) | tap the right half (fires on press, not on release) |
 | Dive | `Shift` or left mouse button | swipe the right half in any direction |
 | Restart | `R` | tap anywhere on the death screen |
@@ -44,10 +55,44 @@ npx serve .          # or: python3 -m http.server 8080
 | Workout mode | `E`, then `1`–`4` | the **GYM** button, then the exercise buttons |
 | Debug overlay | `F3` | triple-tap the top-left corner |
 
+Turning **3-lane fitness run** off in settings restores free analog running: `W A S D` steer
+anywhere across the belt, and the six obstacle types come at you without walls or coins. Both
+modes are the same build and the same physics; the toggle is live mid-run.
+
 A gamepad works too if one is connected: left stick to move, A to jump, B to dive.
 
 **Auto-run** (in settings) holds the forward throttle for you and reduces the left pad to
 lateral steering, which makes one-handed play viable.
+
+## The fitness run
+
+Three lanes, spaced as a fraction of the playable belt width so a lane change costs the same
+0.24s in portrait as it does in ultrawide (measured: 29 frames in all four aspect ratios).
+A lunge is refused at the outside lanes rather than silently swallowed, and it plays the lunge
+pose while the body slides — the yaw is capped at 22° so the penguin sidesteps instead of
+pivoting, and the lean carries the read at 15–18° of roll.
+
+**Coins** arrive in runs of four to eight in a single lane, sometimes arcing so you have to
+jump for them. An unbroken run pays more per coin, up to a ×12 chain — committing to a lane
+is worth something.
+
+**Walls** carry one of the four exercise names on a lit sign and stand 2.55 units tall in
+courses of brickwork — one course per required rep, two to four depending on the belt tier.
+The right exercise takes the top course off; the wrong one costs you nothing but the time.
+The wall's remaining height *is* its collider, so grinding a four-course wall down to a stub
+and hopping the last course is a legitimate way through, worth a smaller bonus than shattering
+it. The HUD says `OR JUMP IT` when the stub is low enough, so the option is never a secret.
+
+The spawner will not put a wall on the belt unless the reps are physically possible in the
+time it takes to arrive — measured against the worst-case closing speed, and against the
+minimum rep cadence with 35% slack on top. Obstacles and walls never share the corridor:
+obstacles stop spawning 14 belt-units before a wall is due, and a wall waits for the corridor
+to drain before it spawns. Solid lane blockers can never seal all three lanes inside a
+16-unit window, which is comfortably more than one lane change.
+
+Every movement signal in the game — key, on-screen button, or anything added later — enters
+through a single `Moves.trigger(kind)` call. Nothing downstream knows which produced it, so
+a camera-based pose detector could drive the same function without touching game logic.
 
 ## Workout mode
 
@@ -162,7 +207,9 @@ the same get-up beat as the dive.
 throws telegraphed surges (0.8s of klaxon and rumble first) and unannounced stutters that
 pitch an over-committed runner into the front roller. Six obstacle types ride the belt
 toward you: low sweeper bars, high bars you must dive under, swinging pendulums, rotating
-fan blades, inflatable bumpers, and slick patches.
+fan blades, inflatable bumpers, and slick patches. In lane mode they snap to lane centres —
+and keep tracking those centres if the playfield width changes underneath them — so dodging
+is a lane decision rather than a nudge.
 
 **Physics runs on a fixed 60Hz accumulator** with interpolated rendering, and the
 accumulator is clamped to five steps of catch-up so backgrounding the app for thirty
@@ -180,8 +227,14 @@ consequence, which is the point: a full-width dodge costs the same *time* and th
 *fraction of thumb travel* in portrait as it does in ultrawide. Depth (Z) extents never
 scale, so timing windows are identical too.
 
-Measured across four viewports, a full lateral dodge takes 88 / 90 / 89 / 90 frames in
-16:9, 414×896 portrait, square, and 2.39:1 ultrawide.
+Measured across four viewports, a full lateral dodge takes 90 / 90 / 90 / 90 frames in
+16:9, 414×896 portrait, square, and 2.39:1 ultrawide, and an outside-to-outside lane change
+takes 29 / 29 / 29 / 29.
+
+The distance the width is derived from is measured in the ZY plane rather than along the
+camera's own axis. That matters in lane mode: the camera picks up a little yaw while tracking
+a side lane, and along-axis distance would feed that yaw back into the very width that defines
+where the lanes are. It converged, but to lanes that shifted 20% inward whenever you used one.
 
 ---
 
@@ -192,6 +245,13 @@ that change how the game feels, in the order I would touch them:
 
 | Value | Default | What it does |
 |---|---|---|
+| `run.laneTime` | `0.24s` | How long a lane change takes, at any belt width. Below ~0.18s it stops reading as a lunge; above ~0.32s you cannot react to a late obstacle. |
+| `run.laneFrac` | `0.62` | Lane spacing as a fraction of the playable half-width. Raise it and the outer lanes hug the edges; lower it and the three lanes bunch up in the middle. |
+| `run.laneYaw` / `laneBank` | `0.38` / `0.30` rad | The sidestep read. Uncapped yaw sends the penguin running fully sideways at ~60°; the bank is driven straight off the lateral rate so the lean survives the cap. |
+| `run.wallReps` | `[2, 4]` | Courses of brickwork, scaled by belt tier. Four is about the most you can hit cleanly before the wall arrives. |
+| `run.repGap` / `repSlack` | `0.20s` / `1.35` | Minimum time between reps, and the margin the spawner assumes on top of it. Drop `repSlack` toward 1.0 and walls start arriving that are only *theoretically* survivable. |
+| `run.wallEvery` / `wallQuiet` | `[74, 112]` / `14` | Belt-units between walls, and the quiet zone before one where obstacles stop spawning. The gap between those two numbers is the entire obstacle budget in lane mode — shrink `wallEvery` and obstacles disappear from the game. |
+| `run.coinValue` | `12` | Per coin, ×(1 + 0.25 per chain step) up to a ×12 chain. |
 | `move.topSpeed` | `12.0` | The whole difficulty curve hangs off this. It sits deliberately just under the mid-game belt speed (`belt.tiers[2] = 12.4`), so holding station is always a small fight. Raise it and the belt stops mattering. |
 | `belt.tiers` | `[10 … 18]` | The pressure ladder. `tiers[0] = 10.0` already needs ~83% throttle to hold station. Lower the first entry for a gentler opening. |
 | `belt.tierAt` | `[0 … 4100]` | Distance at which each tier begins. Widen the gaps for longer plateaus. |
@@ -218,10 +278,10 @@ Budgets, and what was actually measured (see `CHANGELOG.md` for the method and i
 
 | | Budget | Measured |
 |---|---|---|
-| Draw calls | < 80 | **59–72** — 53 in ordinary play, 71 with the obstacle pool forced to its hard ceiling, across 16:9 / portrait / square / ultrawide |
-| Triangles | < 150k | **19k–26k** |
+| Draw calls | < 80 | **69–76** at the reachable worst case — obstacle pool at its lane-mode ceiling *plus* two standing walls, a full 48-coin field and the lane guides, across 16:9 / portrait / square / ultrawide |
+| Triangles | < 150k | **31k–35k** |
 | Fixed-step CPU cost | — | **0.011–0.037 ms/step** (60 steps/s) |
-| Allocation in the frame loop | zero | **0 bytes** from game code; ~4.5 KB/frame remains inside three.js's own `WebGLRenderer.render()` |
+| Allocation in the frame loop | zero | **0 bytes** from game code, in free mode and in lane mode; ~4.5 KB/frame remains inside three.js's own `WebGLRenderer.render()` |
 | Heap growth over 18,000 steps | none | **none** (heap net shrinks; nothing accumulates) |
 | Catch-up steps after backgrounding | ≤ 5 | **5**, clamped |
 
