@@ -1,0 +1,39 @@
+{
+  "appId": "com.moobit.beltrunner",
+  "appName": "Belt Runner",
+  "webDir": "www",
+  "backgroundColor": "#2f7fd8",
+  "loggingBehavior": "none",
+  "server": {
+    "androidScheme": "https",
+    "iosScheme": "capacitor"
+  },
+  "ios": {
+    "contentInset": "always",
+    "backgroundColor": "#2f7fd8",
+    "scrollEnabled": false,
+    "allowsLinkPreview": false,
+    "limitsNavigationsToAppBoundDomains": false,
+    "preferredContentMode": "mobile"
+  },
+  "android": {
+    "backgroundColor": "#2f7fd8",
+    "allowMixedContent": false,
+    "captureInput": false,
+    "webContentsDebuggingEnabled": false
+  },
+  "plugins": {
+    "SplashScreen": {
+      "backgroundColor": "#2f7fd8",
+      "launchAutoHide": true,
+      "launchShowDuration": 500,
+      "androidScaleType": "CENTER_CROP",
+      "showSpinner": false
+    },
+    "StatusBar": {
+      "overlaysWebView": true,
+      "style": "DARK",
+      "backgroundColor": "#2f7fd8"
+    }
+  }
+}
