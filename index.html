@@ -130,6 +130,16 @@
     font-variant-numeric:tabular-nums;letter-spacing:.02em;display:none;white-space:pre;z-index:8;color:#c9f7e6}
   #dbg.on{display:block}
 
+  #gymBar{position:absolute;left:50%;bottom:calc(14px + var(--sab));transform:translateX(-50%);
+    padding:12px 14px 13px;display:none;flex-direction:column;gap:9px;
+    min-width:min(92vw,430px);pointer-events:auto;z-index:6}
+  #gymBar.on{display:flex}
+  #gymTop{display:flex;align-items:flex-end;justify-content:space-between;gap:16px}
+  #gymName{font-size:19px;color:var(--sun)}
+  #gymReps{font-size:30px;color:var(--mint)}
+  #gymRow2{display:flex;align-items:center;justify-content:space-between;gap:12px}
+  #segEx{display:grid;grid-template-columns:repeat(4,1fr);gap:5px}
+  #segEx > div{text-align:center;padding:9px 4px;font-size:10.5px}
   #hint{position:absolute;left:50%;bottom:calc(14px + var(--sab));transform:translateX(-50%);
     font-size:10.5px;letter-spacing:.07em;opacity:.55;text-align:center;line-height:1.5;
     white-space:nowrap;text-shadow:0 2px 6px rgba(0,0,0,.7);transition:opacity .5s ease}
@@ -176,11 +186,32 @@
     </div>
 
     <div id="btnRow">
+      <div id="btnGym" class="iconBtn" role="button" aria-label="Workout"
+        style="font-size:12px;letter-spacing:.04em">GYM</div>
       <div id="btnSet" class="iconBtn" role="button" aria-label="Settings">⚙</div>
     </div>
 
     <div id="surge" class="num">SURGE</div>
     <div id="popWrap"></div>
+
+    <div id="gymBar" class="panel">
+      <div id="gymTop">
+        <div><div class="lbl">Exercise</div><div id="gymName" class="num">SQUATS</div></div>
+        <div style="text-align:right"><div class="lbl">Reps</div><div id="gymReps" class="num">0</div></div>
+      </div>
+      <div class="seg" id="segEx">
+        <div data-v="0" data-on="1">SQUAT</div><div data-v="1">PUSH-UP</div>
+        <div data-v="2">J-JACK</div><div data-v="3">BURPEE</div>
+      </div>
+      <div id="gymRow2">
+        <span class="lbl">Tempo</span>
+        <div class="seg" id="segTempo">
+          <div data-v="0.7">SLOW</div><div data-v="1" data-on="1">NORMAL</div><div data-v="1.45">FAST</div>
+        </div>
+      </div>
+      <button class="btn alt" id="btnGymOut" style="width:100%;margin-top:2px">BACK TO RUNNING</button>
+    </div>
+
     <div id="hint"></div>
   </div>
 
@@ -361,6 +392,9 @@ const TUNING = {
     lead: 0.30,          // s of velocity lead baked into the look target
     offLand: [0.0, 4.20, 7.35],    // landscape offset from the player
     offPort: [0.0, 5.80,  6.55],   // portrait: higher and closer => belt reads as a corridor
+    offWorkLand: [2.95, 1.30, 2.35],  // workout: side-on three-quarter, so form is readable
+    offWorkPort: [2.30, 1.42, 3.15],
+    fovWork: 47,
     lookYLand: 1.20, lookYPort: 0.80,
     hazardPull: 3.60,    // camera slides back as the rear lip closes in
     shakeDecay: 11.0, shakeFreq: 34.0, shakePerImpulse: 0.028, shakeMax: 0.60,
@@ -1199,20 +1233,138 @@ function buildCharacter(){
 const rig = buildCharacter();
 scene.add(rig.root, rig.blob);
 
+/* =====================================================================================
+   9b. EXERCISES — squats, push-ups, jumping jacks and burpees, as pose generators.
+   Same principle as the run cycle: no keyframes, just channels driven from one phase.
+   The rig needed two additions to reach these poses — hip abduction (legs out sideways,
+   for jumping jacks) and a prone lift, because a body pitched flat pivots about the feet
+   and would otherwise sink halfway into the belt.
+   ===================================================================================== */
+const EX_NAMES  = ['SQUATS', 'PUSH-UPS', 'JUMPING JACKS', 'BURPEES'];
+const EX_PERIOD = [1.70, 1.55, 0.95, 3.30];        // seconds per rep at tempo 1.0
+const PRONE_LIFT = 0.50;                            // body half-width, near enough
+
+/* one channel set; three preallocated so burpees can blend between sub-poses */
+function mkEx(){ return { bodyY:0, pitch:0, hipX:0, hipZ:0, footX:0,
+  flipX:0.15, flipZ:0.38, legLift:0, sqY:1, sqXZ:1, flat:1 }; }
+const EX_OUT = mkEx(), EX_A = mkEx(), EX_B = mkEx();
+
+function exWrite(E, bodyY,pitch,hipX,hipZ,footX,flipX,flipZ,legLift,sqY,sqXZ,flat){
+  E.bodyY=bodyY; E.pitch=pitch; E.hipX=hipX; E.hipZ=hipZ; E.footX=footX;
+  E.flipX=flipX; E.flipZ=flipZ; E.legLift=legLift; E.sqY=sqY; E.sqXZ=sqXZ; E.flat=flat;
+}
+function exBlend(dst, a, b, t){
+  dst.bodyY=lerp(a.bodyY,b.bodyY,t); dst.pitch=lerp(a.pitch,b.pitch,t);
+  dst.hipX=lerp(a.hipX,b.hipX,t);    dst.hipZ=lerp(a.hipZ,b.hipZ,t);
+  dst.footX=lerp(a.footX,b.footX,t); dst.flipX=lerp(a.flipX,b.flipX,t);
+  dst.flipZ=lerp(a.flipZ,b.flipZ,t); dst.legLift=lerp(a.legLift,b.legLift,t);
+  dst.sqY=lerp(a.sqY,b.sqY,t);       dst.sqXZ=lerp(a.sqXZ,b.sqXZ,t);
+  dst.flat=lerp(a.flat,b.flat,t);
+}
+/* ---- sub-poses shared by squats and burpees ---- */
+function exStand(E){ exWrite(E, 0, -0.04, 0, 0.02, 0, 0.15, 0.38, 0, 1, 1, 1); }
+function exSquat(E, s){                              // s: 0 standing, 1 bottom
+  exWrite(E, -0.075*s, -0.24*s, 0.30*s, 0.06*s, -0.20*s,
+             0.15 + 1.05*s, 0.38 + 0.30*s, 0.075*s,
+             1 - 0.19*s, 1 + 0.12*s, 1);
+}
+function exPlank(E, s){                              // s: 0 arms extended, 1 chest down
+  exWrite(E, 0.44 - 0.30*s, -1.40, -0.10, 0.10, 0.55,
+             1.30 - 0.16*s, 0.58 + 0.30*s, 0,
+             1, 1 + 0.06*s, 1 - 0.07*s);
+}
+function exReach(E, s){                              // s: 0 crouched, 1 flippers overhead
+  exWrite(E, 0.10 + 0.52*s, -0.05, -0.22*s, 0.06 + 0.10*s, 0.20*s,
+             0.10 - 0.45*s, 0.38 + 2.10*s, 0,
+             1 + 0.06*s, 1 - 0.05*s, 1);
+}
+
+function exPose(kind, u){
+  const E = EX_OUT;
+  u = u - Math.floor(u);
+  const wave = 0.5 - 0.5*Math.cos(u*PI2);            // 0 -> 1 -> 0 over one rep
+
+  if (kind === 0){                                   // ---- SQUATS ----
+    exSquat(E, smooth(wave));
+
+  } else if (kind === 1){                            // ---- PUSH-UPS ----
+    exPlank(E, smooth(wave));
+
+  } else if (kind === 2){                            // ---- JUMPING JACKS ----
+    const s = smooth(wave);
+    const hop = Math.max(0, Math.sin(u*PI2*2));      // a hop out and a hop back in
+    const land = Math.max(0, Math.cos(u*PI2*2));     // squash where the hop lands
+    exWrite(E,
+      0.13*hop,                    // bodyY
+      -0.06,                       // pitch
+      -0.04*s,                     // hipX
+      0.34*s,                      // hipZ — legs out sideways
+      0.10*s,                      // footX
+      0.10 - 0.42*s,               // flipX
+      lerp(0.30, 2.78, s),         // flipZ — flippers up and out
+      0,                           // legLift
+      1 - 0.10*land, 1 + 0.08*land, 1);
+
+  } else {                                           // ---- BURPEES ----
+    const seg = (lo, hi)=> smooth(clamp01((u - lo)/(hi - lo)));
+    if (u < 0.18){        exStand(EX_A); exSquat(EX_B, 1);  exBlend(E, EX_A, EX_B, seg(0.00,0.18)); }
+    else if (u < 0.34){   exSquat(EX_A, 1); exPlank(EX_B, 0); exBlend(E, EX_A, EX_B, seg(0.18,0.34)); }
+    else if (u < 0.46){   exPlank(EX_A, 0); exPlank(EX_B, 1); exBlend(E, EX_A, EX_B, seg(0.34,0.46)); }
+    else if (u < 0.58){   exPlank(EX_A, 1); exPlank(EX_B, 0); exBlend(E, EX_A, EX_B, seg(0.46,0.58)); }
+    else if (u < 0.74){   exPlank(EX_A, 0); exSquat(EX_B, 1); exBlend(E, EX_A, EX_B, seg(0.58,0.74)); }
+    else if (u < 0.86){   exSquat(EX_A, 1); exReach(EX_B, 1); exBlend(E, EX_A, EX_B, seg(0.74,0.86)); }
+    else {                exReach(EX_A, 1); exStand(EX_B);    exBlend(E, EX_A, EX_B, seg(0.86,1.00)); }
+  }
+  return E;
+}
+
+const Ex = {
+  active:false, kind:0, uAbs:0, reps:0, w:0, tempo:1.0,
+  enter(kind){
+    if (kind !== undefined && kind !== this.kind){ this.kind = kind; this.uAbs = 0; this.reps = 0; }
+    this.active = true;
+  },
+  leave(){ this.active = false; },
+  reset(){ this.active=false; this.uAbs=0; this.reps=0; this.w=0; },
+  get name(){ return EX_NAMES[this.kind]; },
+  step(dt){
+    this.w = damp(this.w, this.active ? 1 : 0, 7.0, dt);
+    if (!this.active){ if (this.w < 0.002) this.w = 0; return; }
+    const before = Math.floor(this.uAbs);
+    this.uAbs += dt * this.tempo / EX_PERIOD[this.kind];
+    const after = Math.floor(this.uAbs);
+    if (after > before){ this.reps += after - before; Sfx.rep(); }
+  },
+};
+
 /* ---- pose application: everything visual is derived, nothing is keyframed ---------- */
 const POSE_TMP = { crX:0, crZ:0, crVX:0, crVZ:0 };
 
 function applyPose(p, dt){
   const r = rig;
-  r.root.position.set(p.x, p.y, p.z);
+  const E = p.exW > 0.001 ? exPose(p.exKind, p.exU) : null;
+  const ew = p.exW;
+
+  /* a body pitched flat pivots about the feet, so lift it by roughly its own half-width
+     or it sinks halfway into the belt. Applies to belly slides and push-ups alike. */
+  const pitchNow = E ? lerp(p.pitch, E.pitch, ew) : p.pitch;
+  const lift = PRONE_LIFT * clamp01(-pitchNow/1.35) * (1 - p.w.rag);
+
+  r.root.position.set(p.x, p.y + lift + (E ? E.bodyY*ew : 0), p.z);
   r.root.quaternion.identity();
   r.rotG.quaternion.set(p.qx, p.qy, p.qz, p.qw);
+  if (E){
+    _e1.set(E.pitch, 0, 0, 'YXZ'); _q3.setFromEuler(_e1);
+    r.rotG.quaternion.slerp(_q3, ew);
+  }
 
   /* world-vertical flatten: a belly-sliding penguin squashes against the belt */
-  r.flatG.scale.set(1 + (1-p.flat)*0.45, p.flat, 1 + (1-p.flat)*0.30);
+  const flatN = E ? lerp(p.flat, E.flat, ew) : p.flat;
+  r.flatG.scale.set(1 + (1-flatN)*0.45, flatN, 1 + (1-flatN)*0.30);
 
   /* squash / stretch, plus the pivot shift that lets a ragdoll tumble about its middle */
-  r.sqG.scale.set(p.sx, p.sy, p.sz);
+  const exSy = E ? lerp(1, E.sqY, ew) : 1, exSxz = E ? lerp(1, E.sqXZ, ew) : 1;
+  r.sqG.scale.set(p.sx*exSxz, p.sy*exSy, p.sz*exSxz);
   r.sqG.position.y = p.pivot;
 
   const W = p.w;
@@ -1223,9 +1375,10 @@ function applyPose(p, dt){
   /* ---- torso: bob on 2x the step frequency, lateral sway on 1x — this is the waddle ---- */
   const bob  = Math.sin(ph*2)*ANIM.bobAmp*spN;
   const sway = sinP*ANIM.swayAmp*spN;
-  r.bodyG.position.set(sway*W.run, bob*W.run + p.breath, 0);
-  r.bodyG.rotation.z = -sinP*ANIM.swayRoll*spN*W.run;
-  r.bodyG.rotation.y = sinP*0.075*spN*W.run;
+  const locW = 1 - ew;                               // exercises suppress the waddle
+  r.bodyG.position.set(sway*W.run*locW, (bob*W.run + p.breath)*locW, 0);
+  r.bodyG.rotation.z = -sinP*ANIM.swayRoll*spN*W.run*locW;
+  r.bodyG.rotation.y = sinP*0.075*spN*W.run*locW;
 
   /* ---- limb targets per state, then weighted ---- */
   const legAmp = ANIM.legAmp*(0.36+0.64*spN), armAmp = ANIM.armAmp*(0.30+0.70*spN);
@@ -1250,11 +1403,24 @@ function applyPose(p, dt){
   const shR  = W.run*runShR  + W.air*airShR  + W.dive*dvSh  + W.get*gSh   + W.rag*(rSh*0.8);
   const flare= W.run*runFlare+ W.air*airFlare+ W.dive*dvFlare+ W.get*gFlare + W.rag*rFlare;
 
-  r.legL.pivot.rotation.x = hipL; r.legR.pivot.rotation.x = hipR;
-  r.legL.boot.rotation.x = -hipL*0.55 + (W.dive+W.rag)*0.30;   // pads stay flattish to the belt
-  r.legR.boot.rotation.x = -hipR*0.55 + (W.dive+W.rag)*0.30;
-  r.armL.rotation.x = shL; r.armR.rotation.x = shR;
-  r.armL.rotation.z = -flare; r.armR.rotation.z = flare;       // positive flare splays outward
+  let hL = hipL, hR = hipR, sL = shL, sR = shR, fl = flare;
+  let bootL = -hipL*0.55 + (W.dive+W.rag)*0.30, bootR = -hipR*0.55 + (W.dive+W.rag)*0.30;
+  let abduct = 0, legLift = 0;
+  if (E){
+    hL = lerp(hL, E.hipX, ew); hR = lerp(hR, E.hipX, ew);
+    sL = lerp(sL, E.flipX, ew); sR = lerp(sR, E.flipX, ew);
+    fl = lerp(fl, E.flipZ, ew);
+    bootL = lerp(bootL, E.footX, ew); bootR = lerp(bootR, E.footX, ew);
+    abduct = E.hipZ*ew; legLift = E.legLift*ew;
+  }
+  r.legL.pivot.rotation.x = hL; r.legR.pivot.rotation.x = hR;
+  r.legL.pivot.rotation.z = -abduct; r.legR.pivot.rotation.z = abduct;   // legs out sideways
+  r.legL.boot.rotation.x = bootL;                              // pads stay flattish to the belt
+  r.legR.boot.rotation.x = bootR;
+  r.legL.boot.position.y = -0.235 + legLift;                   // the body sinks, feet stay planted
+  r.legR.boot.position.y = -0.235 + legLift;
+  r.armL.rotation.x = sL; r.armR.rotation.x = sR;
+  r.armL.rotation.z = -fl; r.armR.rotation.z = fl;             // positive flare splays outward
 
   /* ---- crest: springy secondary motion, plus an idle twitch ---- */
   const tgtX = clamp(-p.accZ*0.013 - p.vyN*0.12, -0.7, 0.7) + p.twitch*0.5;
@@ -1749,12 +1915,14 @@ const J = TUNING.jump, MV = TUNING.move, DV = TUNING.dive, RG = TUNING.ragdoll;
 
 function mkPose(){
   return { x:0,y:0,z:0, qx:0,qy:0,qz:0,qw:1, sx:1,sy:1,sz:1, pivot:0, flat:1,
+    pitch:0, exU:0, exW:0, exKind:0,
     phase:0, speedN:0, vyN:0, accX:0, accZ:0, breath:0, blink:0, twitch:0, getT:0, groundY:0,
     w:{run:1,air:0,dive:0,get:0,rag:0} };
 }
 function copyPose(d,s){
   d.x=s.x; d.y=s.y; d.z=s.z; d.qx=s.qx; d.qy=s.qy; d.qz=s.qz; d.qw=s.qw;
   d.sx=s.sx; d.sy=s.sy; d.sz=s.sz; d.pivot=s.pivot; d.flat=s.flat;
+  d.pitch=s.pitch; d.exU=s.exU; d.exW=s.exW; d.exKind=s.exKind;
   d.phase=s.phase; d.speedN=s.speedN; d.vyN=s.vyN; d.accX=s.accX; d.accZ=s.accZ;
   d.breath=s.breath; d.blink=s.blink; d.twitch=s.twitch; d.getT=s.getT; d.groundY=s.groundY;
   d.w.run=s.w.run; d.w.air=s.w.air; d.w.dive=s.w.dive; d.w.get=s.w.get; d.w.rag=s.w.rag;
@@ -1872,7 +2040,12 @@ function startRagdoll(ix,iy,iz, offX, offY, power){
   P.nearMissChain = 0;
 }
 
-function beltDragNow(){ return Belt.speed * (P.grounded ? 1 : B.airDrag); }
+function beltDragNow(){
+  /* stepping into a workout must not drag you five units down the belt while it spins
+     down — the belt slows visibly, the penguin stays planted. */
+  if (Game.state === 'workout') return 0;
+  return Belt.speed * (P.grounded ? 1 : B.airDrag);
+}
 
 /* ---- the fixed 60Hz step ----------------------------------------------------------- */
 function stepPlayer(dt){
@@ -2137,6 +2310,8 @@ function writePose(pose, dt){
   pose.sz = pose.sx;
   pose.pivot = -BODY_Y*P.w.rag;
   pose.flat = P.flat;
+  pose.pitch = P.pitch;
+  pose.exU = Ex.uAbs; pose.exW = Ex.w; pose.exKind = Ex.kind;
   _e1.set(P.pitch, P.yaw, P.roll, 'YXZ'); _q2.setFromEuler(_e1);
   if (P.w.rag > 0.0005) _q2.slerp(P.rq, P.w.rag);
   pose.qx=_q2.x; pose.qy=_q2.y; pose.qz=_q2.z; pose.qw=_q2.w;
@@ -2164,6 +2339,8 @@ function lerpPose(a,b,t){
   o.qx=_q1.x; o.qy=_q1.y; o.qz=_q1.z; o.qw=_q1.w;
   o.sx=lerp(a.sx,b.sx,t); o.sy=lerp(a.sy,b.sy,t); o.sz=lerp(a.sz,b.sz,t);
   o.pivot=lerp(a.pivot,b.pivot,t); o.flat=lerp(a.flat,b.flat,t);
+  o.pitch=lerp(a.pitch,b.pitch,t); o.exU=lerp(a.exU,b.exU,t);
+  o.exW=lerp(a.exW,b.exW,t); o.exKind=b.exKind;
   o.phase=lerp(a.phase,b.phase,t); o.speedN=lerp(a.speedN,b.speedN,t); o.vyN=lerp(a.vyN,b.vyN,t);
   o.accX=lerp(a.accX,b.accX,t); o.accZ=lerp(a.accZ,b.accZ,t);
   o.breath=lerp(a.breath,b.breath,t); o.blink=lerp(a.blink,b.blink,t); o.twitch=lerp(a.twitch,b.twitch,t);
@@ -2208,12 +2385,13 @@ const Fx = {
    18. THE BELT — tiers on a curve, surges, stutters.
    ===================================================================================== */
 const Belt = {
-  base:B.tiers[0], speed:B.tiers[0], tier:0, dist:0, mult:1, multT:1,
+  base:B.tiers[0], speed:B.tiers[0], tier:0, dist:0, mult:1, multT:1, hold:false,
   surgeNext:0, surgeState:0, surgeT:0,
   stutNext:0, stutState:0, stutT:0,
   scrollV:0,
   reset(){
     this.base=B.tiers[0]; this.speed=B.tiers[0]; this.tier=0; this.dist=0; this.mult=1; this.multT=1;
+    this.hold=false;
     this.surgeNext=rndR(B.surge.every[0],B.surge.every[1]); this.surgeState=0; this.surgeT=0;
     this.stutNext=rndR(B.stutter.every[0],B.stutter.every[1]); this.stutState=0; this.stutT=0;
   },
@@ -2224,7 +2402,7 @@ const Belt = {
     let t = 0;
     for (let i=0;i<B.tierAt.length;i++) if (this.dist >= B.tierAt[i]) t = i;
     if (t !== this.tier){ this.tier = t; UI.tierUp(t); }
-    const want = B.tiers[this.tier];
+    const want = this.hold ? 0 : B.tiers[this.tier];
     const rate = Math.abs(want - this.base)/B.stepTime;
     this.base = moveTo(this.base, want, Math.max(rate, 1.2)*dt);
 
@@ -2511,7 +2689,8 @@ const Cam = {
   step(dt, p){
     this.t += dt;
     const port = PLAY.portrait;
-    const o = port ? CM.offPort : CM.offLand;
+    const gym = Ex.w > 0.02;
+    const o = gym ? (port ? CM.offWorkPort : CM.offWorkLand) : (port ? CM.offPort : CM.offLand);
     const hz = clamp01(invLerp(HAZARD_Z-2, B.rear, p.z));
     const py = clamp(p.y, -1.6, 7.0);          // a body in the pit must not drag the camera down
     const tx = p.x*0.62 + o[0];
@@ -2525,13 +2704,14 @@ const Cam = {
     /* look target leads the motion; softer spring so the camera trails the body */
     const lead = CM.lead;
     spring(this,'lx','vlx', p.x + P.vx*lead*0.5, CM.lookFreq, dt);
-    spring(this,'ly','vly', (port?CM.lookYPort:CM.lookYLand) + py*0.55, CM.lookFreq, dt);
+    spring(this,'ly','vly', (gym ? 0.74 : (port?CM.lookYPort:CM.lookYLand) + py*0.55), CM.lookFreq, dt);
     spring(this,'lz','vlz', p.z + clamp((P.vz + Belt.speed*0.18)*lead*0.55, -1.6, 1.6), CM.lookFreq, dt);
 
     /* fov kick */
     let f = lerp(CM.fovBase, LIVE.fovTop, Math.pow(clamp01(p.speedN),1.25));
     if (P.state===ST.DIVE) f = Math.max(f, port ? CM.fovDive-5 : CM.fovDive);
     if (Belt.surgeState>=2 && Belt.surgeState<=3) f += 3.0;
+    if (gym) f = lerp(f, CM.fovWork, clamp01(Ex.w));
     this.fov = damp(this.fov, f, CM.fovEase, dt);
 
     /* springs for the landing dip and the impact shake */
@@ -2798,6 +2978,7 @@ const Sfx = {
   slide(){ this.burst(0.55, 0.14, 1500, 320, 'bandpass'); },
   bounce(i){ this.blip('sine', 160, 460, 0, 0.14+i*0.10, 0.17); this.blip('triangle', 620, 260, 0, 0.07, 0.12); },
   bonk(i){ this.blip('square', 190, 58, 0, 0.14+i*0.14, 0.24, 900); this.burst(0.26, 0.14+i*0.12, 1500, 200); },
+  rep(){ this.blip('triangle', 880, 1180, 0, 0.075, 0.11); },
   chime(n){ const f = 660*Math.pow(1.1892, Math.min(n,7)); this.blip('triangle', f, f*1.5, 0, 0.11, 0.20); },
   tier(){ for (let i=0;i<3;i++) setTimeout(()=>this.blip('triangle', 520*Math.pow(1.26,i), 520*Math.pow(1.26,i)*1.4, 0, 0.12, 0.20), i*95); },
   klaxon(){
@@ -2882,6 +3063,7 @@ const UI = {
     this.scoreBox=$('scoreBox'); this.tierBox=$('tierBox'); this.surgeEl=$('surge'); this.vig=$('vig');
     this.cardStart=$('cardStart'); this.cardDead=$('cardDead'); this.deadScore=$('deadScore'); this.deadSub=$('deadSub');
     this.hint=$('hint'); this.dbg=$('dbg'); this.setPanel=$('settings'); this.setCard=$('setCard');
+    this.gymBar=$('gymBar'); this.gymName=$('gymName'); this.gymReps=$('gymReps');
     const wrap=$('popWrap');
     for (let i=0;i<8;i++){ const d=document.createElement('div'); d.className='pop'; wrap.appendChild(d); this.pops.push(d); }
     this.ready = true; uiReady = true;
@@ -2896,7 +3078,7 @@ const UI = {
       : '<kbd>W A S D</kbd> / <kbd>↑←↓→</kbd> move &nbsp; <kbd>SPACE</kbd> jump<br><kbd>SHIFT</kbd> or <kbd>CLICK</kbd> dive &nbsp; <kbd>R</kbd> restart';
     this.hint.innerHTML = touch
       ? 'drag left · tap right to jump · swipe right to dive'
-      : 'W A S D · SPACE jump · SHIFT dive · R restart';
+      : 'W A S D · SPACE jump · SHIFT dive · R restart · E workout';
   },
   bindControls(){
     /* Space is the jump key. A mouse-clicked button keeps focus, and Space then activates
@@ -2927,6 +3109,18 @@ const UI = {
       });
     }
     $('btnSet').addEventListener('click',(e)=>{ e.stopPropagation(); unfocus(e); this.toggleSettings(); });
+    $('btnGym').addEventListener('click',(e)=>{ e.stopPropagation(); unfocus(e);
+      Game.workout(Game.state !== 'workout'); });
+    $('btnGymOut').addEventListener('click',(e)=>{ e.stopPropagation(); unfocus(e); Game.workout(false); });
+    for (const child of $('segEx').children){
+      child.addEventListener('click',(e)=>{ e.stopPropagation(); unfocus(e); this.gymPick(+child.dataset.v); });
+    }
+    for (const child of $('segTempo').children){
+      child.addEventListener('click',(e)=>{ e.stopPropagation(); unfocus(e);
+        Ex.tempo = +child.dataset.v;
+        for (const c2 of $('segTempo').children) c2.dataset.on = (c2===child)?'1':'0';
+      });
+    }
     $('btnClose').addEventListener('click',(e)=>{ e.stopPropagation(); unfocus(e); this.toggleSettings(false); });
     $('btnPlay').addEventListener('click',(e)=>{ e.stopPropagation(); unfocus(e); Game.start(); });
     $('btnAgain').addEventListener('click',(e)=>{ e.stopPropagation(); unfocus(e); Game.restart(); });
@@ -2982,6 +3176,27 @@ const UI = {
     if (fw !== this._fw){ this._fw = fw; this.fill.style.width = fw + '%'; }
     const vg = Math.round(Fx.warn*40);
     if (vg !== this._vg){ this._vg = vg; this.vig.style.opacity = vg/58; }
+    this.gymUpdate();
+  },
+  gym(on){
+    this.gymBar.classList.toggle('on', on);
+    $('scoreBox').style.opacity = on ? '0.25' : '1';
+    $('tierBox').style.opacity = on ? '0.25' : '1';
+    this.hint.style.opacity = '0';
+    if (on){ this.gymName.textContent = Ex.name; this._reps = -1; }
+  },
+  gymUpdate(){
+    if (!this.gymBar.classList.contains('on')) return;
+    if (this._reps !== Ex.reps){
+      this._reps = Ex.reps; this.gymReps.textContent = String(Ex.reps);
+      tween(this.gymReps, 0, 0.30, 0.22);
+    }
+  },
+  gymPick(k){
+    Ex.enter(k);
+    this.gymName.textContent = Ex.name;
+    for (const c of $('segEx').children) c.dataset.on = (+c.dataset.v===k)?'1':'0';
+    this._reps = -1; this.gymReps.textContent = '0';
   },
   showDead(){
     this.deadScore.textContent = String(Math.floor(Score.total()));
@@ -3024,9 +3239,11 @@ const In = {
       if (k===' '){ this.jumpEdge = true; this.jumpHeld = true; }
       if (k==='shift') this.diveEdge = true;
       if (k==='r') Game.restart();
+      if (k==='e') Game.workout(Game.state !== 'workout');
+      if (Game.state==='workout' && k>='1' && k<='4') UI.gymPick(+k - 1);
       if (k==='escape') UI.toggleSettings();
       if (k==='f3') DBG.toggle();
-      if (Game.state==='title') Game.start();
+      if (Game.state==='title' && k!=='e') Game.start();
     }, {passive:false});
     addEventListener('keyup', (e)=>{
       const k = e.key.toLowerCase();
@@ -3066,6 +3283,7 @@ const In = {
     }
     if (Game.state==='title'){ Game.start(); return; }
     if (Game.state==='dead'){ Game.restart(); return; }
+    if (Game.state==='workout') return;              // the workout panel owns input here
     if (Game.paused) return;
 
     if (!touchish){                                  // mouse: LMB dives, RMB nothing
@@ -3127,6 +3345,7 @@ const In = {
 
   /* build the analog move vector every frame from whichever device is in use */
   poll(dt){
+    if (Game.state === 'workout'){ this.mx = 0; this.mz = 0; return; }
     if (this.demo){
       const t = performance.now()/1000;
       const err = P.z - B.homeZ;                       // simple station-keeping controller
@@ -3321,7 +3540,7 @@ const Game = {
   state:'title', paused:false, startedAt:0,
   resetWorld(){
     for (let i=obsActive.length-1;i>=0;i--) despawn(obsActive[i]);
-    Belt.reset(); Belt.scoring = false;
+    Belt.reset(); Belt.scoring = false; Belt.hold = false; Ex.reset();
     Score.reset();
     Spawn.gapLeft = 16; Spawn.blocked = 0; Spawn.lastLead = 9.9; Spawn.minLead = 99;
     Spawn.count = 0; Spawn.patterns = 0;
@@ -3334,6 +3553,7 @@ const Game = {
     UI.surge(false);
   },
   start(){
+    if (this.state === 'workout') return;
     if (this.state !== 'title') return;
     this.state = 'play'; this.startedAt = performance.now();
     In.demo = false;
@@ -3361,6 +3581,27 @@ const Game = {
     Fx.flash(0.3);
   },
   pause(v){ this.paused = v; },
+  workout(on, kind){
+    if (on){
+      for (let i=obsActive.length-1;i>=0;i--) despawn(obsActive[i]);
+      this.state = 'workout';
+      Belt.hold = true; Belt.scoring = false;
+      P.x = 0; P.z = B.homeZ; P.y = 0; P.vx = 0; P.vy = 0; P.vz = 0;
+      P.state = ST.RUN; P.grounded = true; P.dying = false; P.yaw = 0; P.roll = 0;
+      Ex.enter(kind === undefined ? Ex.kind : kind);
+      UI.showCard(UI.cardStart, false); UI.showCard(UI.cardDead, false);
+      UI.gym(true);
+      Sfx.resume();
+    } else {
+      Ex.leave();
+      Belt.hold = false;
+      UI.gym(false);
+      this.state = 'title';
+      In.demo = true;
+      this.resetWorld();
+      UI.showCard(UI.cardStart, true);
+    }
+  },
 };
 Belt.scoring = false;
 
@@ -3382,6 +3623,7 @@ let acc = 0, lastT = 0, propDz = 0, started = false;
 function simulate(dt){
   if (Cam.hs > 0){ Cam.hs = Math.max(0, Cam.hs - dt); return; }   // hit-stop: the whole sim freezes
   Belt.step(dt);
+  Ex.step(dt);
   stepObstacles(dt);
   stepPlayer(dt);
   Fx.step(dt);
@@ -3527,7 +3769,7 @@ requestAnimationFrame(frame);
 window.BR = { TUNING, LIVE, P, Belt, Game, In, Score, Quality, DBG, Post, PLAY, Spawn, Settings, Sfx,
   obsActive, obsPool, FX, Cam, Fx, ST, OT, OBS_DEF, applyInputMode, resize, camera, renderer, scene, rig, THREE,
   simulate, updatePlayArea, stepPlayer, doJump, startDive, startRagdoll, spawnPattern, spawnZBase, getObstacle,
-  curPose, prevPose, FIXED,
+  curPose, prevPose, FIXED, Ex, exPose, EX_NAMES, UI,
   haltRender(v){ renderHalted = !!v; lastT = 0; acc = 0; },
   applyPoseNow(){ applyPose(renderPose, 1/60); },
   /* headless-test driver: advance the fixed-step simulation without waiting on rAF */

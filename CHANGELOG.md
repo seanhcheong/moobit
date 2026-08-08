@@ -399,6 +399,50 @@ insurance for browsers that behave differently.
 **114/114 assertions pass** (50 feel, 32 touch, 25 verify, 7 frameinput). Zero console
 errors, zero warnings.
 
+## Pass 14 — the penguin works out
+
+| Correctness | Feel | Look | Juice | Performance | Touch |
+|---|---|---|---|---|---|
+| **9** | **9** | **9** | **9** | **9** | **9** |
+
+Added a workout mode from a second set of reference poses: **squats, push-ups, jumping jacks,
+burpees**, with a rep counter, three tempos, and a camera that swings round side-on so the
+movement reads. The runner is untouched — `E` or the GYM button goes in, `1`–`4` pick the
+exercise, and you come straight back out.
+
+Built the same way as everything else here: pose generators, not keyframes. One phase value
+per rep drives eleven channels; burpees blend between squat, plank and overhead sub-poses
+across seven timed segments, so an entire burpee is one function of one number.
+
+The rig needed two genuine additions, and finding the second was the useful part:
+
+- **Hip abduction.** Nothing in a running game ever sends a leg out sideways, so the leg
+  pivots only had `rotation.x`. Jumping jacks need `rotation.z`.
+- **A prone lift.** A body pitched flat pivots about the feet, so laying the penguin down put
+  half of it under the belt. Push-ups needed a fix — and rendering the existing *slide* pose
+  to check showed the belly slide had been half-sunk into the belt this whole time. One
+  correction fixed both.
+
+Two things the tests caught that looking would not have:
+
+- **Entering a workout dragged the penguin 5.2 units down the belt** while the belt spun
+  down over half a second. Invisible in the demo footage, because the camera follows the
+  player — it would only have shown up as the world sliding under a penguin doing squats.
+  Belt drag is now zero in workout mode: the belt slows visibly, the penguin stays planted.
+- **My first squat was a bow, not a squat.** This body has no knees and its belly is 0.105
+  above the belt, so it cannot sink far; hinging instead just tipped it forward. Rebuilt
+  around compression — the soft-vinyl body squashes to 0.81 vertical with a shallow 0.24 rad
+  lean — which is the right language for the character anyway.
+
+Also caught by assertion rather than by eye: my burpee jump-height check sampled `u = 0.80`,
+mid-blend, and read 0.27 when the actual apex at `u = 0.86` is 0.62. The assertion now tests
+the range over the whole cycle instead of one guessed phase.
+
+**132/132 assertions pass** (71 feel, 32 touch, 25 verify, 7 frameinput) — 18 new ones
+covering channel ranges per exercise, rep counting against each period, tempo scaling, belt
+hold, 80 seconds of continuous exercise without NaN, and a clean handover back to running.
+43 draw calls in workout mode. Zero console errors, zero warnings.
+
 ---
 
 ## Residual, stated plainly

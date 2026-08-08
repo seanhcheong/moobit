@@ -41,12 +41,31 @@ npx serve .          # or: python3 -m http.server 8080
 | Dive | `Shift` or left mouse button | swipe the right half in any direction |
 | Restart | `R` | tap anywhere on the death screen |
 | Settings | `Esc` or the gear | the gear (top-right, out of both thumb zones) |
+| Workout mode | `E`, then `1`–`4` | the **GYM** button, then the exercise buttons |
 | Debug overlay | `F3` | triple-tap the top-left corner |
 
 A gamepad works too if one is connected: left stick to move, A to jump, B to dive.
 
 **Auto-run** (in settings) holds the forward throttle for you and reduces the left pad to
 lateral steering, which makes one-handed play viable.
+
+## Workout mode
+
+Press `E` or hit **GYM**. The belt spins down, the camera swings round to a side-on
+three-quarter view, and the penguin works out: **squats, push-ups, jumping jacks, burpees**,
+with a rep counter and three tempos. `1`–`4` switch exercise, `E` or **BACK TO RUNNING**
+returns you to the game.
+
+The exercises are pose generators, not keyframes — the same principle as the run cycle. One
+phase value per rep drives eleven channels (body height, pitch, hip swing and abduction, foot
+angle, flipper swing and flare, leg compression, squash, flatten). Burpees are built by
+blending between the squat, plank and overhead sub-poses across seven timed segments, so the
+whole movement is one function of one number.
+
+Two rig additions were needed to reach these poses: **hip abduction**, because nothing in the
+running game ever sends a leg out sideways; and a **prone lift**, because a body pitched flat
+pivots about the feet and would otherwise sink halfway into the belt — which, it turned out,
+it had been doing during every belly slide.
 
 ---
 
