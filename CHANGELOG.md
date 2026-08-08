@@ -19,10 +19,16 @@ rewritten to a local copy of three.js, one line, verified diff):
 - **`verify`** — 25 assertions across four viewports (16:9, portrait, square, 2.39:1
   ultrawide): draw calls, triangles, aspect-ratio equivalence, catch-up clamping, plus a
   five-minute simulation soak.
-- **`frameinput`** — 7 assertions that drive the *real* `requestAnimationFrame` loop under a
+- **`frameinput`** — 11 assertions that drive the *real* `requestAnimationFrame` loop under a
   virtualised clock at 60 / 120 / 144Hz. Added in pass 13, after a bug that the other three
   suites were structurally incapable of seeing: they call the fixed step directly and so
   never exercise the frame loop's own input plumbing.
+- **`lane`** — 56 assertions on the three-lane run: lane changes and their clamping, coins,
+  exercise walls, the stub-hop, the legibility guarantee, and the lane-fairness invariants.
+  Added in pass 15.
+- **`signal`** — 38 assertions on the input contract: continuous rep progress, the collider
+  matching the brickwork at every phase, abandoned reps healing, the driven pose, and tracking
+  loss freezing the world. Added in pass 16.
 
 Plus a per-call allocation breakdown and screenshots at every game state in both
 orientations.
@@ -531,6 +537,111 @@ bonus, the legibility window against both the rep cadence and the closing speed,
 still spawning and still covering all six types in lane mode, the corridor never shared, lane
 centres tracked as the playfield breathes, the three-lane seal invariant, and three minutes of
 lane play with no NaN and bounded pools. Zero console errors, zero warnings.
+
+---
+
+## Pass 16 — the input contract, and reps that happen over time
+
+Phase 2 replaces the keyboard with a camera watching your body. This pass builds the seam that
+makes that swappable, and then follows the consequences until the game actually works for a
+body rather than a thumb.
+
+**The contract.** Four semantic events — `laneChange`, `repProgress`, `repCompleted`,
+`trackingState` — and nothing below that line knows what produced them. The keyboard backend
+does not bypass it: a keypress starts a phase ramp that emits `repProgress` every fixed step
+and `repCompleted` at the end, so keyboard testing exercises the exact plumbing a body will
+use. `Moves.trigger()` stays as an instant-resolve path for tests and the debug overlay.
+
+**Reps became continuous.** A wall now crumbles while you move rather than when you finish.
+The committed courses and the in-flight fraction are tracked separately, so abandoning a rep
+half way heals the damage back and only completion commits a course.
+
+### Four bugs, three of them in things I had already called done
+
+1. **A 3cm gap between the brickwork and the collider.** Courses are drawn with mortar gaps at
+   90% of course height, so the top brick's upper edge sat 5% of a course below the box that
+   actually stops you. Invisible, and it broke the one principle the wall redesign existed to
+   hold. The topmost brick is now placed flush with the collider; measured mismatch across
+   seven phases went 0.0325 → 0.0000 units.
+
+2. **`DBG.steps` reported a stale value while paused.** Only assigned inside the unpaused
+   branch, so the overlay showed the last pre-pause step count instead of zero. Found because
+   my own freeze assertion read it and disagreed with the frame loop, which had frozen
+   correctly.
+
+3. **A material leaked per wall spawn** — carried over from pass 15's review and fixed there,
+   but the same class of bug appeared again as a stale `chipOwner` pointing at a recycled wall,
+   which would have stopped that wall's damage from ever healing. Cleared on despawn.
+
+4. **The closing-speed estimate was 60% too pessimistic in lane mode.** `Belt.speed +
+   forwardSpeed*0.6` is the right worst case in free mode, where a player can sprint into an
+   obstacle. In lane mode station-keeping cancels the run, so the gap closes at just the belt
+   speed — and the inflated estimate was refusing almost every wall. Replaced with the exact
+   rate: belt speed minus the player's net world velocity, plus a margin for a dive.
+
+### The finding that mattered
+
+A keypress commits a rep in 0.42s. A real squat takes about two seconds. Sized honestly, a
+four-rep wall needs ten seconds of visible wall:
+
+```
+rep 0.42s x4  needs  3.60s legible  =>  belt <= 7.6 u/s
+rep 1.20s x4  needs  7.19s legible  =>  belt <= 2.9 u/s
+rep 1.80s x4  needs  9.95s legible  =>  belt <= 1.6 u/s
+rep 2.50s x4  needs 13.17s legible  =>  belt <= 0.8 u/s
+```
+
+No belt speed provides that across a 34-unit runway. The approaching-wall-on-a-timer model
+does not survive real rep durations, and dropping the belt ceiling — Part D's instruction —
+only postpones the problem, because the numbers get worse the slower a person actually is.
+
+So the wall stopped running on a timer. While a rep is in flight the belt eases to 12% of tier
+speed and picks back up when you pause: **effort buys time.** That makes the mechanic work at
+any rep speed rather than one particular one, accommodates a slower body automatically instead
+of punishing it, and keeps the rule intact — stop moving and the wall reaches you.
+
+Measured with bodies reporting real continuous phase, 90s per run:
+
+| rep duration | tier | walls | cleared | hit |
+|---|---|---|---|---|
+| 1.2s | 1 / 8 | 4 / 5 | 4 / 5 | 0 / 0 |
+| 1.8s | 1 / 8 | 4 / 4 | 4 / 4 | 0 / 0 |
+| 2.5s | 1 / 8 | 3 / 4 | 3 / 4 | 0 / 0 |
+| 1.8s, dithering 1.5s per rep | 8 | 4 | **0** | **4** |
+| never moves | 8 | — | 0 | 3 |
+
+Lane mode also got its own belt ladder (5.0–7.6 against free mode's 10–18), since difficulty
+now lives in reps per wall and wall frequency.
+
+### Also
+
+Tracking loss freezes the frame loop outright — verified to zero displacement of player, belt
+and walls over a full second of real frames — and the menu pause and tracking hold are
+independent so neither clears the other. The HUD gained a tracking chip, a specific rejection
+line, and a progress bar that fills as you descend; the on-screen move buttons are a touch
+affordance while the coin count belongs to lane mode on every platform.
+
+### Scores
+
+| | Pass 15 | Pass 16 |
+|---|---|---|
+| Movement feel | 9 | 9 |
+| Treadmill mechanics | 10 | 10 |
+| Camera | 10 | 10 |
+| Visual polish | 9 | 9 |
+| Performance | 9 | 9 |
+| Mobile | 9 | 9 |
+| Input abstraction | — | **9** — four events, three backends possible, keyboard permanent |
+
+**235/235 assertions pass** (71 feel, 32 touch, 27 verify, 11 frameinput, 56 lane, 38 signal).
+The 38 new ones cover: a keypress emitting 26 progress events and exactly one completion;
+damage that only ever increases during a rep; the visible brickwork matching the collider at
+every phase; an abandoned rep healing with no course credited; the wrong exercise unable to
+damage a wall at all; the driven phase being smoothed rather than teleporting, taking the short
+way round the cycle, and releasing when the body stops reporting; tracking loss freezing the
+world without killing the player; and two minutes of ramped reps with no NaN and no rep left
+dangling. Zero console errors, zero warnings, and zero game-code allocation measured over
+12,000 lane steps driving ~9,000 continuous progress calls.
 
 ---
 

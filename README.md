@@ -84,15 +84,56 @@ and hopping the last course is a legitimate way through, worth a smaller bonus t
 it. The HUD says `OR JUMP IT` when the stub is low enough, so the option is never a secret.
 
 The spawner will not put a wall on the belt unless the reps are physically possible in the
-time it takes to arrive — measured against the worst-case closing speed, and against the
-minimum rep cadence with 35% slack on top. Obstacles and walls never share the corridor:
+time it takes to arrive — sized for a *body*'s rep duration (`repDurBody`, 2.2s) with 15%
+slack, against the closing rate a working player actually faces. That rate is the exact one:
+the gap closes at belt speed minus the player's net world velocity, which in lane mode is just
+the belt, because station-keeping cancels the run. The old free-mode estimate added the
+player's forward speed on top and came out 60% too pessimistic here, quietly refusing almost
+every wall. Obstacles and walls never share the corridor:
 obstacles stop spawning 14 belt-units before a wall is due, and a wall waits for the corridor
 to drain before it spawns. Solid lane blockers can never seal all three lanes inside a
 16-unit window, which is comfortably more than one lane change.
 
-Every movement signal in the game — key, on-screen button, or anything added later — enters
-through a single `Moves.trigger(kind)` call. Nothing downstream knows which produced it, so
-a camera-based pose detector could drive the same function without touching game logic.
+## The input contract
+
+Everything the player does reaches the game through four semantic events, and nothing below
+that line knows what produced them:
+
+```
+laneChange(direction)        -1 | +1
+repProgress(kind, phase)     0..1, continuously, while a rep is happening
+repCompleted(kind, form)     form 0..1
+trackingState(state)         'good' | 'degraded' | 'lost'
+```
+
+Keyboard, on-screen buttons and a camera watching a body are interchangeable backends. The
+keyboard one is not a shortcut around the contract: a keypress starts a phase ramp that emits
+`repProgress` every fixed step and `repCompleted` at the end. So testing with keys exercises
+exactly the plumbing a body uses, which is the only reason it stays useful once a camera
+exists. `Moves.trigger()` resolves a rep instantly and exists for tests and the debug
+overlay, where waiting 0.42s per rep would turn every assertion into a timing test.
+
+**Reps are continuous, not discrete.** A wall crumbles while you are moving, not when you
+finish — the top course shrinks as the phase advances, and the course's height *is* the
+collider, verified equal to the visible brickwork at every phase to within 0.0000 units.
+Abandon a rep half way and the damage heals back at 2.6 courses/second; only completion
+commits a course. Feedback arriving during the movement rather than after it is the single
+most effective thing available for hiding the 150–350ms a camera will cost.
+
+**Losing sight of the player never fails them.** `trackingState('lost')` freezes the frame
+loop outright — the belt, the walls, the coins and the penguin all stop, verified to zero
+displacement over a full second of real frames — and shows why. The menu pause and the
+tracking hold are independent, so neither clears the other.
+
+**Effort buys time.** This one is forced by arithmetic rather than taste. A keypress commits
+a rep in 0.42s; a real squat takes about two seconds, and four of them need ten seconds of
+visible wall — which no belt speed can provide across a 34-unit runway. So the wall does not
+run on a fixed timer. While a rep is in flight the belt eases to 12% of its tier speed, and
+it picks back up when you pause. Measured: bodies at 1.2s, 1.8s and 2.5s per rep all clear
+every wall at every tier with zero hits, while a player who dithers 1.5s before each rep gets
+caught by four walls out of four, and one who never moves gets caught immediately. The
+mechanic works at any rep speed instead of one particular one, and a slower body is
+accommodated automatically rather than punished.
 
 ## Workout mode
 
@@ -250,6 +291,10 @@ that change how the game feels, in the order I would touch them:
 | `run.laneYaw` / `laneBank` | `0.38` / `0.30` rad | The sidestep read. Uncapped yaw sends the penguin running fully sideways at ~60°; the bank is driven straight off the lateral rate so the lean survives the cap. |
 | `run.wallReps` | `[2, 4]` | Courses of brickwork, scaled by belt tier. Four is about the most you can hit cleanly before the wall arrives. |
 | `run.repGap` / `repSlack` | `0.20s` / `1.35` | Minimum time between reps, and the margin the spawner assumes on top of it. Drop `repSlack` toward 1.0 and walls start arriving that are only *theoretically* survivable. |
+| `run.repDurBody` | `2.2s` | What the spawner assumes one *real* rep takes. This is the number the whole wall-timing model hangs off; `repDur` (0.42s) is only how long the keyboard's stand-in animation plays. Raise it and walls get further apart and more forgiving. |
+| `run.workBeltMul` | `0.12` | Belt speed while a rep is in flight, as a fraction of tier speed. This is what buys a slow body time. At 1.0 the wall runs on a pure timer and only very fast reps survive; below ~0.1 the world visibly stops dead. |
+| `run.effortUp` / `effortDown` / `workGap` | `9` / `2.6` / `0.30s` | How fast the easing engages, lets go, and how long a gap in the progress signal counts as having stopped. `workGap` has to comfortably exceed the inference interval or the belt will stutter between frames. |
+| `run.beltTiers` | `[5.0 … 7.6]` | The lane-mode ladder, roughly half the free-run one. Difficulty lives in reps-per-wall and wall frequency, not here. |
 | `run.wallEvery` / `wallQuiet` | `[74, 112]` / `14` | Belt-units between walls, and the quiet zone before one where obstacles stop spawning. The gap between those two numbers is the entire obstacle budget in lane mode — shrink `wallEvery` and obstacles disappear from the game. |
 | `run.coinValue` | `12` | Per coin, ×(1 + 0.25 per chain step) up to a ×12 chain. |
 | `move.topSpeed` | `12.0` | The whole difficulty curve hangs off this. It sits deliberately just under the mid-game belt speed (`belt.tiers[2] = 12.4`), so holding station is always a small fight. Raise it and the belt stops mattering. |
@@ -278,10 +323,10 @@ Budgets, and what was actually measured (see `CHANGELOG.md` for the method and i
 
 | | Budget | Measured |
 |---|---|---|
-| Draw calls | < 80 | **69–76** at the reachable worst case — obstacle pool at its lane-mode ceiling *plus* two standing walls, a full 48-coin field and the lane guides, across 16:9 / portrait / square / ultrawide |
+| Draw calls | < 80 | **70–77** at the reachable worst case — obstacle pool at its lane-mode ceiling *plus* two standing walls, a full 48-coin field and the lane guides, across 16:9 / portrait / square / ultrawide |
 | Triangles | < 150k | **31k–35k** |
 | Fixed-step CPU cost | — | **0.011–0.037 ms/step** (60 steps/s) |
-| Allocation in the frame loop | zero | **0 bytes** from game code, in free mode and in lane mode; ~4.5 KB/frame remains inside three.js's own `WebGLRenderer.render()` |
+| Allocation in the frame loop | zero | **0 bytes** from game code — measured over 12,000 lane-mode steps driving ~9,000 continuous `repProgress` calls, across which the heap *shrinks* 1.8 MB; ~4.5 KB/frame remains inside three.js's own `WebGLRenderer.render()` |
 | Heap growth over 18,000 steps | none | **none** (heap net shrinks; nothing accumulates) |
 | Catch-up steps after backgrounding | ≤ 5 | **5**, clamped |
 

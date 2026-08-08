@@ -141,6 +141,21 @@
     transition:transform .16s cubic-bezier(.3,1.7,.5,1), opacity .14s ease;z-index:6}
   #wallCue.on{opacity:1;transform:translate(-50%,0) scale(1)}
   #wallEx{font-size:19px;letter-spacing:.06em}
+  /* the phone ends up on the floor a couple of metres away, so anything that must be read
+     while standing is oversized on purpose. Detail goes to the audio cues, not to here. */
+  #wallArc{display:block;margin:6px auto 0}
+  #trackChip{position:absolute;left:50%;top:calc(58px + var(--sat));transform:translateX(-50%);
+    padding:6px 15px 7px;border-radius:13px;font-size:12px;letter-spacing:.16em;
+    background:rgba(16,22,38,.76);border:2px solid rgba(255,255,255,.18);opacity:0;
+    transition:opacity .18s ease;z-index:7;white-space:nowrap}
+  #trackChip.on{opacity:1}
+  #trackChip.amber{border-color:rgba(255,196,82,.85);color:#ffd68a}
+  #trackChip.red{border-color:rgba(255,110,110,.9);color:#ffb3b3}
+  #rejectMsg{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%) scale(.9);
+    font-size:34px;letter-spacing:.05em;color:#ffd68a;text-shadow:0 3px 0 rgba(0,0,0,.35);
+    opacity:0;pointer-events:none;z-index:7;white-space:nowrap;
+    transition:opacity .12s ease, transform .2s cubic-bezier(.3,1.7,.5,1)}
+  #rejectMsg.on{opacity:1;transform:translate(-50%,-50%) scale(1)}
   #wallReps{font-size:13px;letter-spacing:.14em;opacity:.85;margin-top:3px}
   #moveBar{position:absolute;left:50%;bottom:calc(12px + var(--sab));transform:translateX(-50%);
     display:none;gap:7px;pointer-events:auto;z-index:6}
@@ -208,7 +223,11 @@
     <div id="wallCue">
       <div id="wallEx" class="num">SQUAT</div>
       <div id="wallReps" class="lbl">3 TO GO</div>
+      <canvas id="wallArc" width="120" height="10"></canvas>
     </div>
+
+    <div id="trackChip">TRACKING</div>
+    <div id="rejectMsg" class="num">GO LOWER</div>
 
     <div id="moveBar">
       <div class="moveBtn" data-m="0">SQUAT</div>
@@ -470,14 +489,34 @@ const TUNING = {
     lungeDur: 0.30,      // s of lunge animation per lane change
     repDur:   0.42,      // s of animation for one in-run rep
     repGap:   0.20,      // s minimum between reps, so it stays a rhythm and not a mash
+    driveSmooth: 17,     // how hard a driven phase is smoothed before it reaches the body
+    driveHold:   0.35,   // s without a progress signal before the driven pose lets go
+    chipDecay:   2.6,    // per s that an abandoned rep's damage heals back onto the wall
     coinValue: 12,
     coinRadius: 0.85,
     wallReps: [2, 4],    // reps required, scaled by tier
     wallLead: 0.75,      // s of slack on top of the time the reps physically need
-    repSlack: 1.35,      // x the theoretical minimum rep time — nobody plays at the limit
+    repSlack: 1.15,      // x the honest rep time — nobody moves at exactly the minimum
     wallEvery: [74, 112],// belt units between walls; the gap is where obstacles live
     wallQuiet: 14,       // belt units before a wall in which obstacles stop spawning
     maxObs: 6,           // obstacles fill the gaps between walls, so fewer of them at once
+    /* Part D: a person doing burpees cannot be paced like a thumb on glass. Lane mode runs
+       its own, much slower ladder — the difficulty comes from reps per wall and how often
+       walls arrive, not from belt velocity. Derived, not guessed: a wall spawns 34 units
+       out, a four-rep wall needs ~3.6s of movement, so the closing rate has to stay under
+       ~9.4 u/s or the spawner would be forced to refuse every hard wall. */
+    beltTiers: [5.0, 5.6, 6.2, 6.7, 7.0, 7.3, 7.5, 7.6],
+    closeMargin: 1.8,    // u/s of headroom for a dive, which is the one way to close faster
+    /* A real squat takes about two seconds, not the 0.42s a keypress animates. Four of them
+       need ~10s of visible wall, which no belt speed can give across a 34-unit runway. So
+       the wall does not run on a fixed timer: while the body is actually mid-rep the belt
+       eases almost to a stop, and it picks back up when you pause. Effort buys time, which
+       makes the mechanic work at any rep speed instead of one particular one — and means a
+       slower body is accommodated automatically rather than punished. */
+    repDurBody: 2.2,     // s the spawner assumes one real rep takes (keyboard finishes early)
+    workBeltMul: 0.12,   // belt speed while a rep is in flight, as a fraction of tier speed
+    effortUp: 9.0, effortDown: 2.6,   // how fast the easing engages and lets go
+    workGap: 0.30,       // s without a progress signal before the belt decides you stopped
     coinEvery: [17, 30],
   },
 
@@ -1438,7 +1477,8 @@ function exPose(kind, u){
 const Ex = {
   /* w is the pose weight; gymW is separate and only rises for the *looping* workout, so a
      one-shot rep during a run never drags the camera into workout framing */
-  active:false, loop:true, kind:0, uAbs:0, reps:0, w:0, gymW:0, tempo:1.0, dur:0.5,
+  active:false, loop:true, driven:false, kind:0, uAbs:0, uTgt:0, driveT:0,
+  reps:0, w:0, gymW:0, tempo:1.0, dur:0.5,
   enter(kind){                                        // looping: workout mode
     if (kind !== undefined && kind !== this.kind){ this.kind = kind; this.uAbs = 0; this.reps = 0; }
     this.active = true; this.loop = true;
@@ -1446,10 +1486,21 @@ const Ex = {
   /* one rep, played once as feedback for an in-run movement, then it lets go */
   oneShot(kind, dur){
     this.kind = kind; this.uAbs = 0; this.dur = dur || 0.45;
-    this.active = true; this.loop = false; this.w = Math.max(this.w, 0.35);
+    this.active = true; this.loop = false; this.driven = false;
+    this.w = Math.max(this.w, 0.35);
   },
-  leave(){ this.active = false; },
-  reset(){ this.active=false; this.loop=true; this.uAbs=0; this.reps=0; this.w=0; this.gymW=0; },
+  /* driven: the phase arrives from outside — ultimately from a body. We smooth what is
+     *displayed* and never what is decided on, so a jittery signal cannot make the penguin
+     twitch while the state machine upstream still reasons on the raw numbers. */
+  drive(kind, u){
+    if (kind !== this.kind){ this.kind = kind; this.uAbs = clamp01(u); }
+    this.active = true; this.loop = false; this.driven = true;
+    this.uTgt = clamp01(u); this.driveT = 0;
+    this.w = Math.max(this.w, 0.35);
+  },
+  leave(){ this.active = false; this.driven = false; },
+  reset(){ this.active=false; this.loop=true; this.driven=false;
+           this.uAbs=0; this.uTgt=0; this.driveT=0; this.reps=0; this.w=0; this.gymW=0; },
   get name(){ return EX_NAMES[this.kind]; },
   step(dt){
     const target = this.active ? 1 : 0;
@@ -1461,6 +1512,17 @@ const Ex = {
       const before = Math.floor(this.uAbs);
       this.uAbs += dt * this.tempo / EX_PERIOD[this.kind];
       if (Math.floor(this.uAbs) > before){ this.reps += Math.floor(this.uAbs) - before; Sfx.rep(); }
+    } else if (this.driven){
+      this.driveT += dt;
+      if (this.driveT > TUNING.run.driveHold){ this.active = false; this.driven = false; }
+      else {
+        /* the phase is cyclic: 0 and 1 are the same pose, so take the short way round or
+           a rep ending will play the whole movement backwards */
+        let d = this.uTgt - this.uAbs;
+        if (d > 0.5) d -= 1; else if (d < -0.5) d += 1;
+        this.uAbs += d * (1 - Math.exp(-TUNING.run.driveSmooth*dt));
+        if (this.uAbs < 0) this.uAbs += 1; else if (this.uAbs >= 1) this.uAbs -= 1;
+      }
     } else {
       this.uAbs += dt / this.dur;
       if (this.uAbs >= 1){ this.uAbs = 1; this.active = false; }
@@ -2540,13 +2602,17 @@ const Run = {
     Coins.clear(); Walls.clear();
   },
   /* an exercise rep arrived — the nearest unbroken wall in front of us is the target */
-  rep(kind){
+  /* a rep landed. The nearest unbroken wall in front is the target; the wrong exercise
+     costs you nothing but the time it took. */
+  repDone(kind){
     const w = Walls.target();
     if (w && w.kind === kind){ Walls.chip(w); return; }
-    if (w){ Fx.flash(0.05); Sfx.thud(0.25); }        // wrong exercise: no progress
+    if (w){ Fx.flash(0.05); Sfx.thud(0.25); Signal.rejected++; UI.reject('WRONG MOVE'); }
   },
   step(dt){
     if (this.chainT > 0){ this.chainT -= dt; if (this.chainT <= 0) this.chain = 0; }
+    Signal.progT += dt;
+    RepDrive.step(dt);
     Coins.step(dt);
     Walls.step(dt);
     if (Game.state !== 'play' || !this.lanes) return;
@@ -2644,7 +2710,7 @@ const WALL_H = 2.55;              /* full height of a fresh wall */
 const WALL_COLS = 3;              /* bricks across a course — one per lane */
 const WALL_HOP = 0.78;            /* a stub this low can be jumped instead of finished */
 const Walls = {
-  pool:[], active:[],
+  pool:[], active:[], chipOwner:null,        /* the wall a rep is currently working on */
   make(){
     const root = new THREE.Group(); root.visible = false;
     const W = REF_HALF*2 + 0.6;
@@ -2667,7 +2733,7 @@ const Walls = {
     bricks.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     root.add(bricks);
     scene.add(root);
-    return { root, frame, sign, bricks, alive:false, z:0, kind:0, need:0, done:0,
+    return { root, frame, sign, bricks, alive:false, z:0, kind:0, need:0, done:0, chip:0,
              passed:false, hitDone:false, lead:0 };
   },
   get(){
@@ -2675,8 +2741,8 @@ const Walls = {
     const w = this.make(); this.pool.push(w); return w;
   },
   clear(){
-    for (const w of this.pool){ w.alive=false; w.root.visible=false; }
-    this.active.length = 0;
+    for (const w of this.pool){ w.alive=false; w.root.visible=false; w.done=0; w.chip=0; }
+    this.active.length = 0; this.chipOwner = null;
   },
   /* true while a wall owns the corridor — obstacles stay away so you are never asked
      to dodge and to do reps in the same breath */
@@ -2698,22 +2764,43 @@ const Walls = {
     for (const w of this.active) if (w.z < spawnZBase() + 14) return true;
     return false;
   },
+  /* how far down the wall has been taken: committed courses plus the rep in flight */
+  prog(w){ return Math.min(w.need, w.done + w.chip); },
   /* height of what is still standing — this is the collider, not a separate number */
-  height(w){ return WALL_H * (1 - w.done/Math.max(1, w.need)); },
-  /* full-width courses stacked from the belt up; a rep removes the top one */
+  height(w){ return WALL_H * (1 - this.prog(w)/Math.max(1, w.need)); },
+  /* full-width courses stacked from the belt up. Whole courses below, and the course being
+     taken right now shrinks from the top, so the brickwork you see and the box that stops
+     you are always exactly the same height. */
   layout(w){
-    const courses = w.need - w.done;
+    const remaining = Math.max(0, w.need - this.prog(w));
     const span = Run.laneW()*2 + 1.9;
     const ch = WALL_H/Math.max(1, w.need);
     const bw = span/WALL_COLS;
+    const whole = Math.floor(remaining + 1e-6);
+    const frac = remaining - whole;
+    const top = ch*remaining;                      // == height(w): what actually stops you
+    const partial = frac > 0.02;
     let n = 0;
-    for (let r=0;r<courses;r++){
-      const y = ch*(r + 0.5);
-      /* every other course offset by half a brick, like real brickwork */
+    for (let r=0;r<whole;r++){
+      /* mortar gaps between courses, except the topmost one when there is no partial course
+         above it — that brick sits flush with the collider, or the box that stops you would
+         stand a few centimetres above the brickwork you can see */
+      const hb = ch*0.9;
+      const flush = (!partial && r === whole-1);
+      const y = flush ? top - hb*0.5 : ch*(r + 0.5);
       const off = (r % 2) ? bw*0.5 : 0;
       for (let c=0;c<WALL_COLS;c++){
         _v1.set(-span/2 + bw*(c+0.5) + off*0.35, y, 0);
-        _q1.identity(); _v2.set(bw*0.94, ch*0.9, 1);
+        _q1.identity(); _v2.set(bw*0.94, hb, 1);
+        _m1.compose(_v1,_q1,_v2);
+        w.bricks.setMatrixAt(n++, _m1);
+      }
+    }
+    if (partial){                                  // the course currently coming apart
+      const hb = ch*frac*0.9, off = (whole % 2) ? bw*0.5 : 0;
+      for (let c=0;c<WALL_COLS;c++){
+        _v1.set(-span/2 + bw*(c+0.5) + off*0.35, top - hb*0.5, 0);
+        _q1.identity(); _v2.set(bw*0.94, hb, 1);
         _m1.compose(_v1,_q1,_v2);
         w.bricks.setMatrixAt(n++, _m1);
       }
@@ -2721,18 +2808,35 @@ const Walls = {
     w.bricks.count = n;
     w.bricks.instanceMatrix.needsUpdate = true;
   },
+  /* the rep in flight: crumble the top course as the body actually moves, and let it heal
+     if the rep is abandoned. The wall only truly loses a course on completion. */
+  chipTo(w, frac){
+    const f = clamp01(frac);
+    if (Math.abs(f - w.chip) < 0.004) return;
+    if (f > w.chip && rnd() < 0.28)
+      burstSparks(rndR(-2.2,2.2), this.height(w) - 0.12, w.z, 1.0, 0, 1, 0.4);
+    w.chip = f; this.layout(w);
+  },
   trySpawn(){
     const sz = spawnZBase();
     const need = clamp(RN.wallReps[0] + Math.floor(Belt.tier*0.45), RN.wallReps[0], RN.wallReps[1]);
-    /* the wall has to arrive late enough that the reps are physically possible */
-    const closing = Belt.speed + Math.max(0, -P.vz)*0.6;
+    /* the wall has to arrive late enough that the reps are physically possible.
+       The gap closes at (belt speed - the player's net world velocity), which in lane mode
+       is just the belt, because station-keeping cancels the run. The old free-mode estimate
+       added the player's forward speed and was 60% too pessimistic here, which quietly
+       refused almost every wall. A dive is the one way to close faster, hence the margin. */
+    const closing = Math.max(0.5, Belt.workSpeed(Belt.tier) - (P.vz + beltDragNow()) + RN.closeMargin);
     const lead = (P.z - sz)/closing;
-    const needTime = need*RN.repGap*RN.repSlack + RN.wallLead;
+    /* the honest cost of the reps: each one takes repDur of actual movement plus the gap
+       before the next can start. Counting only the gap was fine when a keypress committed a
+       course instantly; a body has to move through the whole rep. This is what pushes the
+       telegraph out to the 3-4s a person needs. */
+    const needTime = need*(RN.repDurBody + RN.repGap)*RN.repSlack + RN.wallLead;
     if (lead < Math.max(LIVE.legibility, needTime)) { Spawn.blocked++; return false; }
     /* let the corridor drain first — obstacles stop spawning once a wall is due */
     for (let i=0;i<obsActive.length;i++) if (obsActive[i].z < P.z + 2) return false;
     const w = this.get();
-    w.alive = true; w.z = sz; w.kind = rndI(0,3); w.need = need; w.done = 0;
+    w.alive = true; w.z = sz; w.kind = rndI(0,3); w.need = need; w.done = 0; w.chip = 0;
     w.passed = false; w.hitDone = false; w.lead = lead;
     w.sign.material.map = TEX.sign[w.kind];       // each pooled wall owns its material
     w.bricks.material.color.set(EX_COLOR[w.kind]);
@@ -2742,10 +2846,12 @@ const Walls = {
     Sfx.klaxon();
     return true;
   },
+  /* a completed rep: commit the course the in-flight damage had been working on */
   chip(w){
     /* the course that just came off — burst along the top edge of what was standing */
-    const yTop = this.height(w);
-    w.done++;
+    const yTop = WALL_H * (1 - w.done/Math.max(1, w.need));
+    w.done++; w.chip = 0;
+    if (this.chipOwner === w) this.chipOwner = null;
     const span = Run.laneW()*2 + 1.9;
     for (let c=0;c<WALL_COLS;c++){
       const bx = -span/2 + (span/WALL_COLS)*(c+0.5);
@@ -2768,6 +2874,11 @@ const Walls = {
       const w = this.active[i];
       w.z += dz;
       w.root.position.z = w.z;
+      /* an abandoned rep heals back: no progress is arriving for this wall any more */
+      if (w.chip > 0 && this.chipOwner !== w){
+        const f = Math.max(0, w.chip - RN.chipDecay*dt);
+        if (f !== w.chip){ w.chip = f; this.layout(w); }
+      }
       const h = this.height(w);
       /* contact: whatever is still standing stops you, unless you are above it. Ground a
          tall wall down to a stub and hopping the last course is a legitimate way through. */
@@ -2785,37 +2896,121 @@ const Walls = {
           UI.pop(P.x, w.z, 'HOPPED  +25'); Sfx.chime(2);
         }
       }
-      if (w.z > B.rear + 4){ w.alive=false; w.root.visible=false; this.active.splice(i,1); }
+      if (w.z > B.rear + 4){
+        w.alive=false; w.root.visible=false; w.chip=0;
+        if (this.chipOwner === w) this.chipOwner = null;   // never leave a recycled wall owned
+        this.active.splice(i,1);
+      }
     }
   },
 };
 
 /* =====================================================================================
-   16b. MOVES — every movement signal in the game enters through Moves.trigger().
-   Keyboard, on-screen buttons and (later) a camera pose detector all call this one
-   function; nothing downstream knows or cares which produced it.
+   16b. THE INPUT CONTRACT — four semantic events, and nothing below this line knows what
+   produced them. A keyboard, on-screen buttons, and a camera watching a body are
+   interchangeable backends; the game only ever sees these calls.
+
+       laneChange(dir)            -1 | +1
+       repProgress(kind, phase)   0..1, continuously, while a rep is happening
+       repCompleted(kind, form)   form 0..1
+       trackingState(s)           'good' | 'degraded' | 'lost'
+
+   The keyboard backend is not a shortcut around this: a keypress starts a phase ramp that
+   emits repProgress every step and repCompleted at the end. So testing with keys exercises
+   exactly the plumbing a body will use, which is the only reason it stays useful once the
+   camera exists.
    ===================================================================================== */
 const MOVE = { SQUAT:0, PUSHUP:1, JACK:2, BURPEE:3, LUNGE_L:4, LUNGE_R:5 };
-const Moves = {
-  last:-1, count:0,
-  trigger(m){
-    if (Game.state !== 'play' || !P.alive || P.dying) return false;
-    if (m === MOVE.LUNGE_L || m === MOVE.LUNGE_R){
-      if (!Run.lanes) return false;
-      const want = clamp(P.lane + (m === MOVE.LUNGE_L ? -1 : 1), -1, 1);
-      if (want === P.lane) return false;
-      P.lane = want;
-      Ex.oneShot(m, TUNING.run.lungeDur);
-      Sfx.lunge(); this.last = m; this.count++;
-      return true;
-    }
-    /* an exercise rep: registered on the press, animated as feedback. Waiting for the
-       animation to finish before counting would make a four-rep wall feel like lag. */
-    if (P.repCd > 0) return false;
+const IS_LUNGE = (m)=> m === MOVE.LUNGE_L || m === MOVE.LUNGE_R;
+const TRACK = { GOOD:'good', DEGRADED:'degraded', LOST:'lost' };
+
+const Signal = {
+  source:'key',                 /* 'key' | 'touch' | 'pose' — for the debug overlay only */
+  track:TRACK.GOOD,
+  last:-1, count:0, progCount:0, rejected:0, lastForm:1,
+  progT:99,                     /* s since the last repProgress — the belt reads this */
+
+  live(){ return Game.state === 'play' && P.alive && !P.dying; },
+
+  laneChange(dir){
+    if (!this.live() || !Run.lanes) return false;
+    const want = clamp(P.lane + (dir < 0 ? -1 : 1), -1, 1);
+    if (want === P.lane) return false;
+    P.lane = want;
+    Ex.oneShot(dir < 0 ? MOVE.LUNGE_L : MOVE.LUNGE_R, TUNING.run.lungeDur);
+    Sfx.lunge();
+    this.last = dir < 0 ? MOVE.LUNGE_L : MOVE.LUNGE_R; this.count++;
+    return true;
+  },
+
+  /* the body is mid-rep. Drives the penguin's pose and crumbles the wall as it happens —
+     feedback during the movement rather than after it, which is the whole point. */
+  repProgress(kind, phase){
+    if (!this.live() || IS_LUNGE(kind)) return false;
+    const u = clamp01(phase);
+    Ex.drive(kind, u);
+    this.progCount++; this.progT = 0;
+    const w = Walls.target();
+    if (w && w.kind === kind){ Walls.chipOwner = w; Walls.chipTo(w, u); }
+    else if (Walls.chipOwner && Walls.chipOwner.kind !== kind) Walls.chipOwner = null;
+    return true;
+  },
+
+  /* the rep finished cleanly. This is what commits a course. */
+  repCompleted(kind, form){
+    if (!this.live() || IS_LUNGE(kind)) return false;
+    this.lastForm = (form === undefined) ? 1 : clamp01(form);
+    this.last = kind; this.count++;
+    Run.repDone(kind);
+    return true;
+  },
+
+  trackingState(s){
+    if (s === this.track) return;
+    this.track = s;
+    /* never fail the player for something the camera did. Freeze the world instead. */
+    Game.holdFor(s === TRACK.LOST);
+    UI.tracking(s);
+  },
+};
+
+/* ---- the keyboard / button backend: one press becomes a whole rep, phase and all ---- */
+const RepDrive = {
+  active:false, kind:0, t:0, dur:0.42,
+  start(kind){
+    if (P.repCd > 0 || this.active) return false;
     P.repCd = TUNING.run.repGap;
-    Ex.oneShot(m, TUNING.run.repDur);
-    this.last = m; this.count++;
-    Run.rep(m);
+    this.active = true; this.kind = kind; this.t = 0; this.dur = TUNING.run.repDur;
+    return true;
+  },
+  cancel(){ this.active = false; },
+  step(dt){
+    if (!this.active) return;
+    this.t += dt;
+    const u = clamp01(this.t/this.dur);
+    Signal.repProgress(this.kind, u);
+    if (u >= 1){ this.active = false; Signal.repCompleted(this.kind, 1); }
+  },
+};
+
+const Moves = {
+  get last(){ return Signal.last; },
+  get count(){ return Signal.count; },
+  /* what a key or a button calls. A lunge is instantaneous; a rep starts the ramp. */
+  press(m){
+    if (!Signal.live()) return false;
+    if (IS_LUNGE(m)) return Signal.laneChange(m === MOVE.LUNGE_L ? -1 : 1);
+    return RepDrive.start(m);
+  },
+  /* the same thing, resolved immediately: for tests and for the debug overlay, where
+     waiting 0.42s per rep would make every assertion a timing test */
+  trigger(m){
+    if (!Signal.live()) return false;
+    if (IS_LUNGE(m)) return Signal.laneChange(m === MOVE.LUNGE_L ? -1 : 1);
+    if (!RepDrive.start(m)) return false;
+    RepDrive.cancel();
+    Signal.repProgress(m, 1);
+    Signal.repCompleted(m, 1);
     return true;
   },
 };
@@ -2856,11 +3051,19 @@ const Fx = {
    ===================================================================================== */
 const Belt = {
   base:B.tiers[0], speed:B.tiers[0], tier:0, dist:0, mult:1, multT:1, hold:false,
+  /* lane mode has its own, slower ladder; every consumer reads it through here */
+  effort:0,                       /* 0..1 — how much the belt is easing for a working body */
+  ladder(){ return Run.lanes ? RN.beltTiers : B.tiers; },
+  /* the speed a wall closes at for someone who is actually doing the reps */
+  workSpeed(i){ return this.tierSpeed(i) * RN.workBeltMul; },
+  tierSpeed(i){ const L = this.ladder(); return L[clamp(i, 0, L.length-1)]; },
+  topSpeed(){ const L = this.ladder(); return L[L.length-1]; },
   surgeNext:0, surgeState:0, surgeT:0,
   stutNext:0, stutState:0, stutT:0,
   scrollV:0,
   reset(){
-    this.base=B.tiers[0]; this.speed=B.tiers[0]; this.tier=0; this.dist=0; this.mult=1; this.multT=1;
+    this.base=this.tierSpeed(0); this.speed=this.base; this.tier=0; this.dist=0; this.mult=1; this.multT=1;
+    this.effort=0;
     this.hold=false;
     this.surgeNext=rndR(B.surge.every[0],B.surge.every[1]); this.surgeState=0; this.surgeT=0;
     this.stutNext=rndR(B.stutter.every[0],B.stutter.every[1]); this.stutState=0; this.stutT=0;
@@ -2872,7 +3075,11 @@ const Belt = {
     let t = 0;
     for (let i=0;i<B.tierAt.length;i++) if (this.dist >= B.tierAt[i]) t = i;
     if (t !== this.tier){ this.tier = t; UI.tierUp(t); }
-    const want = this.hold ? 0 : B.tiers[this.tier];
+    /* a rep in flight eases the belt; pausing lets it pick back up */
+    const working = Run.lanes && Signal.progT < RN.workGap && Walls.chipOwner;
+    this.effort = damp(this.effort, working ? 1 : 0, working ? RN.effortUp : RN.effortDown, dt);
+    const tierWant = this.tierSpeed(this.tier) * lerp(1, RN.workBeltMul, this.effort);
+    const want = this.hold ? 0 : tierWant;
     const rate = Math.abs(want - this.base)/B.stepTime;
     this.base = moveTo(this.base, want, Math.max(rate, 1.2)*dt);
 
@@ -3579,7 +3786,10 @@ const UI = {
     this.gymBar=$('gymBar'); this.gymName=$('gymName'); this.gymReps=$('gymReps');
     this.moveBar=$('moveBar'); this.coinBox=$('coinBox'); this.coinEl=$('coins');
     this.cue=$('wallCue'); this.wallEx=$('wallEx'); this.wallReps=$('wallReps');
+    this.arc=$('wallArc'); this.arcCtx=this.arc.getContext('2d');
+    this.trackChip=$('trackChip'); this.rejectMsg=$('rejectMsg');
     this._cueOn=false; this._cueKind=-1; this._cueLeft=-1; this._coins=-1;
+    this._arcW=-1; this._track=''; this._rejectT=0;
     const wrap=$('popWrap');
     for (let i=0;i<8;i++){ const d=document.createElement('div'); d.className='pop'; wrap.appendChild(d); this.pops.push(d); }
     this.ready = true; uiReady = true;
@@ -3644,7 +3854,7 @@ const UI = {
     }
     for (const child of $('moveBar').children){
       child.addEventListener('pointerdown',(e)=>{ e.stopPropagation(); e.preventDefault();
-        Moves.trigger(+child.dataset.m); });
+        Moves.press(+child.dataset.m); });
       child.addEventListener('click',(e)=>{ e.stopPropagation(); unfocus(e); });
     }
     for (const child of $('segTempo').children){
@@ -3703,7 +3913,8 @@ const UI = {
     }
     const bs = Math.floor(Score.best);
     if (this._best !== bs){ this._best = bs; this.best.textContent = bs < 1000 ? String(bs) : (bs/1000).toFixed(2)+'k'; }
-    const f = clamp01((Belt.speed - B.tiers[0])/(B.tiers[B.tiers.length-1]*B.surge.mul - B.tiers[0]));
+    const lo = Belt.tierSpeed(0), hi = Belt.topSpeed()*B.surge.mul;
+    const f = clamp01((Belt.speed - lo)/Math.max(0.01, hi - lo));
     const fw = Math.round(8 + f*92);
     if (fw !== this._fw){ this._fw = fw; this.fill.style.width = fw + '%'; }
     const vg = Math.round(Fx.warn*40);
@@ -3711,12 +3922,48 @@ const UI = {
     this.gymUpdate();
     if (this._coins !== Run.coins){ this._coins = Run.coins; this.coinEl.textContent = String(Run.coins); }
     this.wallCue(Game.state === 'play' && Run.lanes ? Walls.target() : null);
+    this.rejectStep(dt);
   },
   /* the on-screen move buttons are a touch affordance; the coin count belongs to lane mode
      on every platform */
   moves(on){
     this.moveBar.classList.toggle('on', on && inputMode === 'touch');
     this.coinBox.classList.toggle('on', on);
+  },
+  /* the tracking state, as a colour you can read at three metres */
+  tracking(s){
+    if (s === this._track) return;
+    this._track = s;
+    const c = this.trackChip;
+    c.classList.toggle('on', s !== TRACK.GOOD);
+    c.classList.toggle('amber', s === TRACK.DEGRADED);
+    c.classList.toggle('red', s === TRACK.LOST);
+    c.textContent = s === TRACK.LOST ? 'PAUSED \u2014 STEP BACK INTO VIEW'
+                  : s === TRACK.DEGRADED ? 'TRACKING PATCHY' : 'TRACKING';
+  },
+  /* why a rep did not count. Never a bare failure — the audio layer says the same thing. */
+  reject(msg){
+    this.rejectMsg.textContent = msg;
+    this.rejectMsg.classList.add('on');
+    this._rejectT = 0.9;
+    tween(this.rejectMsg, 0, 0.24, 0.18);
+  },
+  rejectStep(dt){
+    if (this._rejectT <= 0) return;
+    this._rejectT -= dt;
+    if (this._rejectT <= 0) this.rejectMsg.classList.remove('on');
+  },
+  /* the rep filling as the body moves: 0..1 of the course currently coming apart */
+  wallArc(f){
+    const w = Math.round(clamp01(f)*100);
+    if (w === this._arcW) return;
+    this._arcW = w;
+    const g = this.arcCtx, W = this.arc.width, H = this.arc.height;
+    g.clearRect(0,0,W,H);
+    g.fillStyle = 'rgba(255,255,255,0.20)';
+    g.fillRect(0, H*0.3, W, H*0.4);
+    g.fillStyle = '#8ee6a8';
+    g.fillRect(0, H*0.2, W*(w/100), H*0.6);
   },
   wallCue(w){
     const on = !!w;
@@ -3728,6 +3975,7 @@ const UI = {
       this.wallEx.style.color = EX_COLOR[w.kind];
       for (const b of this.moveBar.children) b.classList.toggle('lit', +b.dataset.m === w.kind);
     }
+    this.wallArc(w.chip);
     /* once it is ground down to a stub, say so — hopping the remainder is a real option */
     const hop = Walls.height(w) <= WALL_HOP;
     if (this._cueLeft !== left || this._cueHop !== hop){
@@ -3799,13 +4047,13 @@ const In = {
       if (k==='shift') this.diveEdge = true;
       /* lane mode: lunges change lane, the other four are exercise reps */
       if (Run.lanes && Game.state === 'play'){
-        if (k==='a' || k==='arrowleft')  Moves.trigger(MOVE.LUNGE_L);
-        if (k==='d' || k==='arrowright') Moves.trigger(MOVE.LUNGE_R);
-        if (k==='s' || k==='arrowdown')  Moves.trigger(MOVE.SQUAT);
-        if (k==='w' || k==='arrowup')    Moves.trigger(MOVE.JACK);
-        if (k==='x')                     Moves.trigger(MOVE.PUSHUP);
-        if (k==='c')                     Moves.trigger(MOVE.BURPEE);
-        if (k>='1' && k<='4')            Moves.trigger(+k - 1);
+        if (k==='a' || k==='arrowleft')  Moves.press(MOVE.LUNGE_L);
+        if (k==='d' || k==='arrowright') Moves.press(MOVE.LUNGE_R);
+        if (k==='s' || k==='arrowdown')  Moves.press(MOVE.SQUAT);
+        if (k==='w' || k==='arrowup')    Moves.press(MOVE.JACK);
+        if (k==='x')                     Moves.press(MOVE.PUSHUP);
+        if (k==='c')                     Moves.press(MOVE.BURPEE);
+        if (k>='1' && k<='4')            Moves.press(+k - 1);
       }
       if (k==='r') Game.restart();
       if (k==='e') Game.workout(Game.state !== 'workout');
@@ -3857,7 +4105,7 @@ const In = {
 
     if (Run.lanes && Game.state === 'play'){
       /* lane mode: the analog pad is pointless, so a tap on either side is a lunge */
-      Moves.trigger(e.clientX < innerWidth*0.5 ? MOVE.LUNGE_L : MOVE.LUNGE_R);
+      Moves.press(e.clientX < innerWidth*0.5 ? MOVE.LUNGE_L : MOVE.LUNGE_R);
       return;
     }
     if (!touchish){                                  // mouse: LMB dives, RMB nothing
@@ -4122,6 +4370,8 @@ const Game = {
   resetWorld(){
     for (let i=obsActive.length-1;i>=0;i--) despawn(obsActive[i]);
     Belt.reset(); Belt.scoring = false; Belt.hold = false; Ex.reset(); Run.reset();
+    RepDrive.cancel(); Signal.track = TRACK.GOOD; this.holdFor(false);
+    Signal.progCount = 0; Signal.rejected = 0;
     Score.reset();
     Spawn.gapLeft = 16; Spawn.blocked = 0; Spawn.lastLead = 9.9; Spawn.minLead = 99;
     Spawn.count = 0; Spawn.patterns = 0;
@@ -4164,7 +4414,11 @@ const Game = {
     UI.showDead();
     Fx.flash(0.3);
   },
-  pause(v){ this.paused = v; },
+  /* two independent reasons to stop the world: the menu, and losing sight of the player.
+     Neither may clear the other's hold. */
+  menuPause:false, trackHold:false,
+  pause(v){ this.menuPause = !!v; this.paused = this.menuPause || this.trackHold; },
+  holdFor(v){ this.trackHold = !!v; this.paused = this.menuPause || this.trackHold; },
   workout(on, kind){
     if (on){
       for (let i=obsActive.length-1;i>=0;i--) despawn(obsActive[i]);
@@ -4290,6 +4544,7 @@ function frame(now){
   } else {
     /* nothing consumes input while paused, so drop it instead of firing it on resume */
     In.jumpEdge = false; In.diveEdge = false;
+    DBG.steps = 0;             // otherwise the overlay reports the last pre-pause value
   }
   /* NOTE: edges are consumed inside the fixed step, never here. A frame can legitimately
      run zero steps (any display faster than 60Hz does it every other frame), and clearing
@@ -4369,7 +4624,7 @@ window.BR = { TUNING, LIVE, P, Belt, Game, In, Score, Quality, DBG, Post, PLAY, 
   obsActive, obsPool, FX, Cam, Fx, ST, OT, OBS_DEF, applyInputMode, resize, camera, renderer, scene, rig, THREE,
   simulate, updatePlayArea, stepPlayer, doJump, startDive, startRagdoll, spawnPattern, spawnZBase, getObstacle,
   curPose, prevPose, FIXED, Ex, exPose, EX_NAMES, EX_SHORT, UI, TEX, world,
-  Run, Coins, Walls, Moves, MOVE,
+  Run, Coins, Walls, Moves, MOVE, Signal, RepDrive, TRACK, IS_LUNGE, beltDragNow,
   haltRender(v){ renderHalted = !!v; lastT = 0; acc = 0; },
   applyPoseNow(){ applyPose(renderPose, 1/60); },
   /* headless-test driver: advance the fixed-step simulation without waiting on rAF */
