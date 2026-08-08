@@ -29,6 +29,10 @@ rewritten to a local copy of three.js, one line, verified diff):
 - **`signal`** — 38 assertions on the input contract: continuous rep progress, the collider
   matching the brickwork at every phase, abandoned reps healing, the driven pose, and tracking
   loss freezing the world. Added in pass 16.
+- **`pose`** / **`pose-negative`** — 52 + 42 assertions on the detection layer, in plain Node
+  with no browser at all. Synthetic bodies built from anatomy, projected through a pinhole
+  camera at various heights, tilts and distances. The negative suite exists purely to try to
+  produce false reps. Added in pass 17.
 
 Plus a per-call allocation breakdown and screenshots at every game state in both
 orientations.
@@ -642,6 +646,103 @@ way round the cycle, and releasing when the body stops reporting; tracking loss 
 world without killing the player; and two minutes of ramped reps with no NaN and no rep left
 dangling. Zero console errors, zero warnings, and zero game-code allocation measured over
 12,000 lane steps driving ~9,000 continuous progress calls.
+
+---
+
+## Pass 17 — the five exercise state machines
+
+The detection layer, in `pose/`. Nothing in it imports three.js, touches the DOM, or knows the
+game exists: landmark frames in, the game's four events out. That independence is the point —
+it lets the whole thing be tested in plain Node with no camera, no browser and no GPU, and it
+is what will let it run in a Worker later without dragging the renderer along.
+
+Five machines (squat, jumping jack, push-up, burpee, and the side lunge as the lane control),
+the normalization layer, and the calibration flow. All thresholds in one config object.
+
+### How it was tested without a camera
+
+Synthetic bodies built from **anatomy** — limb lengths from stature, joint angles, a two-link
+leg — then projected through a real pinhole camera at various heights, tilts and distances. The
+detector has to recover reps from actual perspective, and the poses are defined independently of
+the detection logic, so the test is not circular.
+
+94 assertions across two suites. The second one, `negtest.mjs`, exists purely to try to produce
+false positives: every exercise against every other exercise, plus standing still, shifting
+weight, reaching up to adjust your hair, a shallow knee bend and bouncing on the spot.
+
+### The negative suite earned its place in the first run
+
+**19.57% false-positive rate**, entirely invisible to the positive tests, from three bugs:
+
+1. **A jumping jack counted as six push-ups.** `isProne` had a fallback on shoulder-above-hands
+   depth, for when the torso angle is unrecoverable. Arms overhead drive that measure negative,
+   so a jack read as prone and its arm swing crossed both depth thresholds. That measure works
+   *within* a prone rep; it cannot tell prone from standing — it reads ~0.6 both standing and at
+   the top of a push-up. Asking it to was the bug.
+
+2. **A burpee counted as six squats.** A burpee contains a genuine squat, and the squat machine's
+   torso gate was sampled only on the descent — so the kick-back straightened the knees and
+   satisfied the completion test while the torso was already halfway to horizontal. The gate now
+   watches every frame of the rep.
+
+3. **A burpee's floor phase counted as a push-up.** Fixed by requiring the body to have settled
+   into the prone position for 400ms before a push-up rep can even begin. You are prone for
+   about a second in the middle of a burpee, but never settled at the top of one.
+
+After the fixes: **0 false reps in 92 opportunities.**
+
+### Three more found by the synthetic bodies
+
+- **The kick-back of a burpee read as giving up on it.** The machine treated straight knees as
+  "stood back up" — but kicking your legs back straightens them while the torso is still
+  pitching forward. Standing up is the only case where the legs straighten *and* the torso is
+  upright, so the gate needs both. A real detector bug that only a correctly-articulated
+  synthetic body could surface.
+- **My own scale-invariance rule broke on the prone pose.** Normalising shoulder height against
+  image-space torso length is right for four exercises and useless for the fifth: prone, the
+  torso points away from the lens and its projected length collapses toward zero, so the ratio
+  explodes. Push-ups now use shoulder height above the planted hands in shoulder widths —
+  shoulder width stays perpendicular to the view axis in every pose.
+- **The lunge could never fire twice.** Displacement was measured from the hip centre, but feet
+  at rest already sit ~0.4 shoulder widths out, so the body never returned to "neutral". A lunge
+  is now displacement *beyond the player's own calibrated stance*.
+
+Also hardened: `dtMs` is clamped, because every machine integrates it and one bad timestamp from
+a tab resume or a restarted stream can poison an accumulator permanently and silently stop
+counting reps. Found when my own test restarted the clock and only the push-up noticed.
+
+### Verified guarantees
+
+| | |
+|---|---|
+| Reps counted | 5 of 5 for each of the four exercises |
+| Scale invariance | 4 reps counted identically at 1.52m / 1.75m / 2.00m body height, 2.2m / 2.6m / 3.2m distance, floor and chest-height cameras |
+| Personal thresholds | a shallow squatter fitted to 124°, a deep one to 104° — neither is the 100° textbook default |
+| False positives | 0 in 92 opportunities |
+| Half reps, bounced reps, too-fast reps | all refused, each with specific feedback |
+| Lane control | fires once per lunge at 17% of the way through the movement, correct screen direction, no double-trigger on the return |
+| Dropouts | a rep with the legs hidden counts nothing, reports the loss, and the next clean rep counts |
+| Framing | a setup that passes standing but clips the wrists overhead is caught, because the check runs in the tallest pose |
+
+### Scores
+
+| | Pass 16 | Pass 17 |
+|---|---|---|
+| Movement feel | 9 | 9 |
+| Treadmill mechanics | 10 | 10 |
+| Camera | 10 | 10 |
+| Visual polish | 9 | 9 |
+| Performance | 9 | 9 |
+| Mobile | 9 | 9 |
+| Input abstraction | 9 | 9 |
+| Detection accuracy | — | **7** — logic verified, but accuracy against real bodies is unmeasured and cannot be measured from here |
+
+Detection accuracy is deliberately not a 9. The synthetic suite proves the machines behave, not
+that their thresholds match real human movement. That number can only move once there are
+recordings of real bodies, which needs a phone.
+
+**329/329 assertions pass** (71 feel, 32 touch, 27 verify, 11 frameinput, 56 lane, 38 signal,
+52 pose, 42 pose-negative).
 
 ---
 
