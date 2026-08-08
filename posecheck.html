@@ -1,0 +1,414 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<title>Belt Runner — pose check</title>
+<!-- inline, so a missing favicon does not put a 404 in the console next to the real errors -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%F0%9F%90%A7%3C/text%3E%3C/svg%3E">
+<!--
+  A diagnostic harness for the detection layer. No game, on purpose.
+
+  If squats do not register on a real body, integrating with the game teaches nothing, so this
+  page exists to answer that question first and to answer it out loud: which inference mode is
+  actually live, what every joint angle reads, what state each machine is in, and why a rep was
+  refused. It is also the fastest thing to run — a laptop webcam over localhost needs no certs
+  and no app build.
+
+  Run: scripts/fetch-pose-assets.sh, then serve the repo and open this over http://localhost
+  or https. getUserMedia needs a secure context, and localhost counts as one.
+-->
+<style>
+  :root{
+    --bg:#0f1420; --panel:rgba(22,29,46,.82); --edge:rgba(255,255,255,.14);
+    --ink:#eef2f8; --dim:#93a3bd; --good:#6ee7a0; --warn:#ffc452; --bad:#ff7a7a; --hi:#7cc4ff;
+  }
+  *{box-sizing:border-box;margin:0}
+  html,body{height:100%}
+  body{
+    background:var(--bg); color:var(--ink); overflow:hidden;
+    font:14px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;
+    -webkit-user-select:none;user-select:none;-webkit-touch-callout:none;
+    padding-top:env(safe-area-inset-top); padding-bottom:env(safe-area-inset-bottom);
+  }
+  #wrap{position:fixed;inset:0;display:flex;flex-direction:column}
+  #stage{position:relative;flex:1;min-height:0;background:#080b12}
+  /* the preview is mirrored because users expect a mirror. The DATA is never mirrored. */
+  #cam{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;transform:scaleX(-1)}
+  #ov{position:absolute;inset:0;width:100%;height:100%}
+
+  #hud{position:absolute;left:10px;top:10px;display:flex;flex-direction:column;gap:8px;
+       max-width:min(46vw,420px);pointer-events:none}
+  .card{background:var(--panel);border:1px solid var(--edge);border-radius:12px;padding:9px 11px;
+        backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
+  .k{color:var(--dim)}
+  .row{display:flex;justify-content:space-between;gap:14px;white-space:nowrap}
+  h2{font-size:11px;letter-spacing:.14em;color:var(--dim);font-weight:600;margin-bottom:5px;
+     text-transform:uppercase}
+
+  /* big enough to read from across a room, because that is where you will be standing */
+  #big{position:absolute;right:12px;top:10px;text-align:right;pointer-events:none}
+  #repbig{font-size:min(17vw,86px);line-height:1;font-weight:700;letter-spacing:-.02em}
+  #statebig{font-size:min(4.6vw,22px);letter-spacing:.10em;color:var(--hi)}
+  #msg{position:absolute;left:50%;top:44%;transform:translate(-50%,-50%);text-align:center;
+       font-size:min(6.5vw,34px);letter-spacing:.03em;color:var(--warn);pointer-events:none;
+       opacity:0;transition:opacity .15s ease;text-shadow:0 2px 0 rgba(0,0,0,.4)}
+  #msg.on{opacity:1}
+  #guide{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);text-align:center;
+         font-size:min(4.4vw,20px);letter-spacing:.06em;color:var(--good);pointer-events:none}
+
+  #bar{display:flex;flex-wrap:wrap;gap:6px;padding:8px 10px;background:#141a28;
+       border-top:1px solid var(--edge)}
+  button{font:inherit;font-size:13px;padding:10px 13px;border-radius:11px;color:var(--ink);
+         background:#222c44;border:1px solid var(--edge);cursor:pointer;white-space:nowrap}
+  button:active{transform:translateY(1px)}
+  button.on{background:var(--hi);color:#0b1020;border-color:transparent;font-weight:700}
+  button.go{background:var(--good);color:#08160e;border-color:transparent;font-weight:700}
+  .sp{flex:1}
+  .dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--dim);
+       margin-right:6px;vertical-align:baseline}
+  .dot.good{background:var(--good)} .dot.degraded{background:var(--warn)} .dot.lost{background:var(--bad)}
+  #boot{position:fixed;inset:0;display:grid;place-items:center;background:var(--bg);z-index:9;
+        text-align:center;padding:24px;line-height:1.7}
+  #boot code{background:#1b2436;padding:2px 6px;border-radius:5px;color:var(--hi)}
+  .hide{display:none!important}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="stage">
+    <video id="cam" playsinline muted></video>
+    <canvas id="ov"></canvas>
+
+    <div id="hud">
+      <div class="card">
+        <h2>Pipeline</h2>
+        <div class="row"><span class="k">mode</span><span id="pMode">—</span></div>
+        <div class="row"><span class="k">delegate</span><span id="pDel">—</span></div>
+        <div class="row"><span class="k">infer</span><span id="pInf">—</span></div>
+        <div class="row"><span class="k">infer rate</span><span id="pRate">—</span></div>
+        <div class="row"><span class="k">render</span><span id="pFps">—</span></div>
+        <div class="row"><span class="k">tracking</span><span id="pTrack"><i class="dot"></i>—</span></div>
+      </div>
+      <div class="card">
+        <h2>Body</h2>
+        <div class="row"><span class="k">knee</span><span id="bKnee">—</span></div>
+        <div class="row"><span class="k">elbow</span><span id="bElbow">—</span></div>
+        <div class="row"><span class="k">torso tilt</span><span id="bTilt">—</span></div>
+        <div class="row"><span class="k">torso horiz</span><span id="bHoriz">—</span></div>
+        <div class="row"><span class="k">push depth</span><span id="bPush">—</span></div>
+        <div class="row"><span class="k">ankle span</span><span id="bSpan">—</span></div>
+        <div class="row"><span class="k">hip drop</span><span id="bDrop">—</span></div>
+        <div class="row"><span class="k">lunge out</span><span id="bOut">—</span></div>
+        <div class="row"><span class="k">visibility</span><span id="bVis">—</span></div>
+      </div>
+      <div class="card">
+        <h2>Machine</h2>
+        <div class="row"><span class="k">state</span><span id="mState">—</span></div>
+        <div class="row"><span class="k">phase</span><span id="mPhase">—</span></div>
+        <div class="row"><span class="k">lunge</span><span id="mLunge">—</span></div>
+        <div class="row"><span class="k">accepted</span><span id="mOk">0</span></div>
+        <div class="row"><span class="k">refused</span><span id="mNo">0</span></div>
+        <div class="row"><span class="k">lane changes</span><span id="mLane">0</span></div>
+      </div>
+      <div class="card" id="calCard">
+        <h2>Calibration</h2>
+        <div class="row"><span class="k">stage</span><span id="cStage">not started</span></div>
+        <div class="row"><span class="k">squat knee</span><span id="cSquat">—</span></div>
+        <div class="row"><span class="k">push down/up</span><span id="cPush">—</span></div>
+        <div class="row"><span class="k">jack open</span><span id="cJack">—</span></div>
+        <div class="row"><span class="k">lunge span</span><span id="cLunge">—</span></div>
+        <div class="row"><span class="k">stance</span><span id="cStance">—</span></div>
+      </div>
+    </div>
+
+    <div id="big"><div id="repbig">0</div><div id="statebig">—</div></div>
+    <div id="msg"></div>
+    <div id="guide"></div>
+  </div>
+
+  <div id="bar">
+    <button id="bStart" class="go">Start camera</button>
+    <button id="bCal">Calibrate</button>
+    <span class="sp"></span>
+    <button class="ex on" data-ex="2">Jack</button>
+    <button class="ex" data-ex="0">Squat</button>
+    <button class="ex" data-ex="1">Push-up</button>
+    <button class="ex" data-ex="3">Burpee</button>
+    <span class="sp"></span>
+    <button id="bRec">Record</button>
+    <button id="bSave" class="hide">Save JSON</button>
+    <button id="bReset">Reset</button>
+  </div>
+</div>
+
+<div id="boot">
+  <div>
+    <div style="font-size:20px;letter-spacing:.1em;margin-bottom:14px">BELT RUNNER — POSE CHECK</div>
+    <div id="bootMsg">
+      <span style="color:var(--dim)">
+        Needs <code>scripts/fetch-pose-assets.sh</code> to have been run,<br>
+        and this page served over <code>http://localhost</code> or <code>https</code>.
+      </span>
+    </div>
+    <!-- the start button lives INSIDE the overlay: the overlay covers the whole viewport, so a
+         button in the bar underneath it cannot be reached, which made the page unusable -->
+    <button id="bootStart" class="go" style="margin-top:18px;font-size:16px;padding:14px 22px">
+      Start camera
+    </button>
+  </div>
+</div>
+
+<script type="module">
+import * as Det from './pose/detector.js';
+import * as Cal from './pose/calibrate.js';
+import * as Src from './pose/source.js';
+import { EX, EX_NAME } from './pose/config.js';
+import { LM } from './pose/landmarks.js';
+
+const $ = (id)=>document.getElementById(id);
+const D = Det.create();
+const C = Cal.create();
+const S = Src.create();
+
+let want = EX.JACK;
+let accepted = 0, refused = 0, lanes = 0;
+let msgT = 0;
+let recording = false;
+const recorded = [];          /* landmarks only, never pixels. See the note on Save. */
+
+/* the bones we draw. Purely for the operator: a skeleton you can see is the difference between
+   "it is broken" and "you are standing too close". */
+const BONES = [
+  [LM.SHOULDER_L,LM.SHOULDER_R],[LM.SHOULDER_L,LM.HIP_L],[LM.SHOULDER_R,LM.HIP_R],
+  [LM.HIP_L,LM.HIP_R],
+  [LM.SHOULDER_L,LM.ELBOW_L],[LM.ELBOW_L,LM.WRIST_L],
+  [LM.SHOULDER_R,LM.ELBOW_R],[LM.ELBOW_R,LM.WRIST_R],
+  [LM.HIP_L,LM.KNEE_L],[LM.KNEE_L,LM.ANKLE_L],
+  [LM.HIP_R,LM.KNEE_R],[LM.KNEE_R,LM.ANKLE_R],
+  [LM.NOSE,LM.SHOULDER_L],[LM.NOSE,LM.SHOULDER_R],
+];
+
+/* ---- the sink: exactly the four events the game consumes ------------------------------- */
+const sink = {
+  laneChange(dir){ lanes++; $('mLane').textContent = lanes;
+    flash((dir<0?'←':'→') + ' LANE', '--hi'); },
+  repProgress(kind, phase){ /* the live readout picks this up from the machine directly */ },
+  repCompleted(kind, form){
+    accepted++; $('mOk').textContent = accepted;
+    $('repbig').textContent = accepted;
+    Cal.noteOutcome(C, true, performance.now());
+    flash('REP  ' + Math.round(form*100) + '%', '--good');
+    if (C.stage === Cal.STAGE.REPS){
+      const done = Cal.repDone(C);
+      if (done) flash('CALIBRATED', '--good');
+    }
+  },
+  repRejected(kind, reason){
+    refused++; $('mNo').textContent = refused;
+    Cal.noteOutcome(C, false, performance.now());
+    flash(reason, '--warn');
+  },
+  trackingState(state){
+    $('pTrack').innerHTML = '<i class="dot ' + state + '"></i>' + state;
+  },
+};
+
+function flash(text, colorVar){
+  const m = $('msg');
+  m.textContent = text;
+  m.style.color = 'var(' + (colorVar || '--warn') + ')';
+  m.classList.add('on');
+  msgT = performance.now() + 1100;
+}
+
+/* ---- results in ------------------------------------------------------------------------ */
+S.onResult = (res, t)=>{
+  Src.unletterbox(S, res);
+  if (recording && res && res.landmarks && res.landmarks[0]){
+    /* landmarks only — coordinates and confidences. No pixels are captured, stored or sent. */
+    recorded.push({ t: Math.round(t), lm: res.landmarks[0].map(p=>[
+      +p.x.toFixed(4), +p.y.toFixed(4), +p.z.toFixed(4), +(p.visibility||0).toFixed(3)]) });
+    if (recorded.length % 25 === 0) $('bRec').textContent = 'Recording ' + recorded.length;
+  }
+  Det.push(D, res, t, sink);
+  if (C.stage !== Cal.STAGE.IDLE && C.stage !== Cal.STAGE.DONE){
+    Cal.step(C, D.frame, D.body, null);
+    if (C.stage === Cal.STAGE.REPS){
+      /* during the rep stage the current exercise IS the one being calibrated */
+      const k = C.exOrder[C.exIdx];
+      if (k !== undefined && k !== want && k !== EX.LUNGE_L && k !== EX.LUNGE_R) setEx(k);
+      Cal.observe(C, k, D.body);
+    }
+    Det.setCalibration(D, C.cal);
+  }
+  paint();
+  readout();
+};
+S.onError = (e)=>{ flash('ERR ' + e.message, '--bad'); console.error(e); };
+
+/* ---- overlay --------------------------------------------------------------------------- */
+const ov = $('ov');
+function paint(){
+  const cam = $('cam');
+  const W = ov.clientWidth, H = ov.clientHeight;
+  if (ov.width !== W) ov.width = W;
+  if (ov.height !== H) ov.height = H;
+  const g = ov.getContext('2d');
+  g.clearRect(0,0,W,H);
+  if (!D.frame.valid) return;
+
+  /* the video is object-fit: contain, so work out where it actually sits */
+  const vw = cam.videoWidth || 4, vh = cam.videoHeight || 3;
+  const s = Math.min(W/vw, H/vh);
+  const dw = vw*s, dh = vh*s, ox = (W-dw)/2, oy = (H-dh)/2;
+  /* the PREVIEW is mirrored, so the overlay has to be drawn mirrored to sit on top of it.
+     This is presentation only; the landmark values themselves are untouched. */
+  const px = (i)=> ox + (1 - D.frame.img[i].x)*dw;
+  const py = (i)=> oy + (1 - D.frame.img[i].y)*dh;   // frame.img is y-UP; canvas is y-down
+
+  g.lineWidth = Math.max(2, s*0.006);
+  for (const [a,b] of BONES){
+    const va = D.frame.img[a].v, vb = D.frame.img[b].v;
+    const v = Math.min(va, vb);
+    g.strokeStyle = v > 0.6 ? 'rgba(110,231,160,.95)'
+                  : v > 0.35 ? 'rgba(255,196,82,.9)' : 'rgba(255,122,122,.75)';
+    g.beginPath(); g.moveTo(px(a),py(a)); g.lineTo(px(b),py(b)); g.stroke();
+  }
+  for (let i=0;i<33;i++){
+    const v = D.frame.img[i].v;
+    if (v < 0.2) continue;
+    g.fillStyle = v > 0.6 ? 'rgba(124,196,255,.95)' : 'rgba(255,196,82,.85)';
+    g.beginPath(); g.arc(px(i), py(i), Math.max(2.5, s*0.008), 0, Math.PI*2); g.fill();
+  }
+}
+
+/* ---- numbers --------------------------------------------------------------------------- */
+function readout(){
+  const b = D.body, dbg = Det.debugState(D);
+  const f1 = (v)=> (v===undefined||v===null||Number.isNaN(v)) ? '—' : v.toFixed(1);
+  const f2 = (v)=> (v===undefined||v===null||Number.isNaN(v)) ? '—' : v.toFixed(2);
+  $('pMode').textContent = S.mode + (S.inlineFallbackReason ? ' (fell back)' : '');
+  $('pDel').textContent  = S.delegate;
+  $('pInf').textContent  = f1(S.stats.inferMs) + ' ms';
+  $('pRate').textContent = f1(inferHz) + ' Hz';
+  $('pFps').textContent  = f1(S.stats.fps) + ' fps';
+
+  $('bKnee').textContent  = f1(b.knee) + '°';
+  $('bElbow').textContent = f1(b.elbow) + '°';
+  $('bTilt').textContent  = f1(b.torsoTilt) + '°';
+  $('bHoriz').textContent = f1(b.torsoHoriz) + '°';
+  $('bPush').textContent  = f2(b.pushDepth);
+  $('bSpan').textContent  = f2(b.ankleSpan);
+  $('bDrop').textContent  = f2(b.hipDrop);
+  $('bOut').textContent   = f2(Math.max(-b.ankleLX, b.ankleRX) - (D.cal.standStanceHalf||0));
+  $('bVis').textContent   = f2(dbg.vis);
+
+  $('mState').textContent = dbg.state;
+  $('mPhase').textContent = f2(dbg.phase);
+  $('mLunge').textContent = dbg.lungeState + (dbg.refractory ? ' ' + dbg.refractory + 'ms' : '');
+  $('statebig').textContent = EX_NAME[want].toUpperCase() + '  ·  ' + dbg.state;
+
+  $('cStage').textContent = C.stage;
+  $('cSquat').textContent = f1(D.cal.squatBottomKnee) + '°';
+  $('cPush').textContent  = f2(D.cal.pushupDownShoulder) + ' / ' + f2(D.cal.pushupUpShoulder);
+  $('cJack').textContent  = f2(D.cal.jackOpenSpan);
+  $('cLunge').textContent = f2(D.cal.lungeFullSpan);
+  $('cStance').textContent= f2(D.cal.standStanceHalf);
+
+  /* guidance: calibration first, then drift, then nothing */
+  let guide = '';
+  if (C.stage === Cal.STAGE.FRAME) guide = C.guidance || 'HOLD STILL, ARMS UP';
+  else if (C.stage === Cal.STAGE.APOSE) guide = 'HOLD STILL';
+  else if (C.stage === Cal.STAGE.REPS){
+    const k = C.exOrder[C.exIdx];
+    guide = 'DO ONE ' + (EX_NAME[k]||'?').toUpperCase().replace('_',' ');
+  } else if (D.cal.ready){
+    guide = Cal.driftGuidance(C, b);
+    if (!guide && Cal.shouldRecalibrate(C)) guide = 'REPS NOT REGISTERING? TAP CALIBRATE';
+  }
+  $('guide').textContent = guide;
+
+  if (msgT && performance.now() > msgT){ $('msg').classList.remove('on'); msgT = 0; }
+}
+
+/* inference rate, measured rather than assumed */
+let inferHz = 0, lastGot = 0, gotWindow = [];
+setInterval(()=>{
+  const d = S.stats.got - lastGot; lastGot = S.stats.got;
+  gotWindow.push(d); if (gotWindow.length > 4) gotWindow.shift();
+  let sum = 0; for (const v of gotWindow) sum += v;
+  inferHz = sum/gotWindow.length*2;         // sampled twice a second
+}, 500);
+
+/* ---- controls -------------------------------------------------------------------------- */
+function setEx(k){
+  want = k; Det.setWant(D, k);
+  for (const btn of document.querySelectorAll('.ex')) btn.classList.toggle('on', +btn.dataset.ex === k);
+}
+for (const btn of document.querySelectorAll('.ex'))
+  btn.addEventListener('click', ()=> setEx(+btn.dataset.ex));
+
+async function startEverything(){
+  $('bStart').disabled = true; $('bootStart').disabled = true;
+  $('bootMsg').innerHTML = 'Opening camera and loading the model…<br>' +
+    '<span style="color:var(--dim)">first load moves ~18MB from disk</span>';
+  try {
+    const settings = await Src.openCamera(S, {});
+    $('cam').srcObject = S.stream;
+    const r = await Src.startWorker(S, { base:'./pose', model:'lite', delegate:'GPU' });
+    Src.start(S);
+    $('boot').classList.add('hide');
+    flash(r.mode + ' / ' + r.delegate, '--good');
+    console.log('camera', settings, 'pipeline', r);
+  } catch (e){
+    $('bootMsg').innerHTML = '<span style="color:var(--bad)">' + e.message + '</span><br><br>' +
+      '<span style="color:var(--dim)">If this mentions the model or wasm, run<br>' +
+      '<code>scripts/fetch-pose-assets.sh</code>.<br>' +
+      'If it mentions permission or a secure context, serve over<br>' +
+      '<code>http://localhost</code> or <code>https</code> — a phone reaching a laptop by IP<br>' +
+      'over plain http is not a secure context and the camera stays blocked.</span>';
+    $('bStart').disabled = false; $('bootStart').disabled = false;
+  }
+}
+$('bStart').addEventListener('click', startEverything);
+$('bootStart').addEventListener('click', startEverything);
+
+$('bCal').addEventListener('click', ()=>{ Cal.begin(C); accepted = 0; refused = 0;
+  $('mOk').textContent = 0; $('mNo').textContent = 0; $('repbig').textContent = 0;
+  flash('CALIBRATING', '--hi'); });
+
+$('bReset').addEventListener('click', ()=>{
+  accepted = refused = lanes = 0;
+  $('mOk').textContent = 0; $('mNo').textContent = 0; $('mLane').textContent = 0;
+  $('repbig').textContent = 0;
+  for (const k in D.mach) D.mach[k].reset();
+  D.lunge.reset();
+});
+
+/* the landmark recorder from Part H: numbers, never pixels, and off by default */
+$('bRec').addEventListener('click', ()=>{
+  recording = !recording;
+  $('bRec').classList.toggle('on', recording);
+  $('bRec').textContent = recording ? 'Recording 0' : 'Record';
+  $('bSave').classList.toggle('hide', recorded.length === 0);
+});
+$('bSave').addEventListener('click', ()=>{
+  const blob = new Blob([JSON.stringify({
+    note:'landmark stream only — no pixels were captured or stored',
+    exercise: EX_NAME[want], calibration: D.cal, frames: recorded,
+  })], { type:'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'pose-' + EX_NAME[want] + '-' + recorded.length + 'f.json';
+  a.click();
+});
+
+/* keep browser gestures out of the way on a phone */
+for (const ev of ['gesturestart','gesturechange','contextmenu'])
+  addEventListener(ev, (e)=>e.preventDefault(), {passive:false});
+addEventListener('touchmove', (e)=>{ if (e.touches.length>1) e.preventDefault(); }, {passive:false});
+addEventListener('resize', paint);
+</script>
+</body>
+</html>

@@ -15,6 +15,22 @@ touch live in the same build simultaneously — there is no mode switch and no s
 
 ---
 
+## Camera control (in progress)
+
+The pose layer lives in [`pose/`](pose/) — five exercise state machines, the normalization that
+makes them work for a body other than mine, and the onboarding calibration. It emits the same
+four events the keyboard does, so the game cannot tell them apart.
+
+**It is not yet wired to the game.** To try the detection on your own body right now:
+
+```bash
+./scripts/fetch-pose-assets.sh      # once: MediaPipe runtime + pose model, ~18MB
+python3 -m http.server 8000
+# open http://localhost:8000/posecheck.html
+```
+
+[`TESTING.md`](TESTING.md) walks through what to look at and how to get it onto a phone.
+
 ## Run it
 
 **Double-click `index.html`.** That's it. The only thing it fetches is three.js r160 from a
