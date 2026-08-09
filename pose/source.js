@@ -71,6 +71,57 @@ export function closeCamera(S){
   S.stream = null; S.video = null; S.worker = null;
 }
 
+/* ---- preflight: is the build step done? -------------------------------------------------
+   `pose/vendor/` is fetched at build time and gitignored, so a fresh clone does not have it.
+   Without this check the first thing that happens is a dynamic import of a URL that 404s, and
+   the browser's own wording for that is worse than useless — Chromium says "Failed to fetch
+   dynamically imported module" and Safari says "Importing a module script failed", neither of
+   which mentions the file, the status, or the script you were supposed to run. A real user hit
+   exactly that on a phone and had no way to know a download step had been skipped.
+
+   Cheap: HEAD only, so the 5.8MB model is never pulled just to prove it is there. Reports the
+   two failure modes that actually happen — missing assets, and a static server handing back the
+   wrong MIME type for .mjs, which fails a module import even when the file is present. */
+const JS_MIME = /(javascript|ecmascript)/i;
+
+export async function preflight({ base='./pose', model='lite' } = {}){
+  const need = [
+    ['vendor/vision_bundle.mjs',                  true],   // module import: MIME matters
+    ['vendor/vision_bundle_worker.js',            true],
+    [`vendor/pose_landmarker_${model}.task`,      false],
+    ['vendor/wasm/vision_wasm_internal.js',       true],
+  ];
+  const missing = [], badMime = [];
+  for (const [rel, isJs] of need){
+    const url = new URL(`${base}/${rel}`, location.href).href;
+    try {
+      const r = await fetch(url, { method:'HEAD', cache:'no-store' });
+      /* Not every server implements HEAD. Reading 405/501 as "the file is missing" would block a
+         perfectly good install behind a confidently wrong message, which is worse than the vague
+         error this function exists to replace — so an unsupported method abandons the check. */
+      if (r.status === 405 || r.status === 501) return { ok:true, checked:false };
+      if (!r.ok){ missing.push(`${rel} (HTTP ${r.status})`); continue; }
+      const ct = r.headers.get('content-type') || '';
+      if (isJs && ct && !JS_MIME.test(ct)) badMime.push(`${rel} served as ${ct.split(';')[0]}`);
+    } catch (e){
+      /* the check itself failed — do not block on it, let the real load report the real error */
+      return { ok:true, checked:false };
+    }
+  }
+  if (missing.length){
+    return { ok:false, checked:true, kind:'missing', detail:missing,
+             message: 'POSE ASSETS NOT INSTALLED',
+             hint: 'run  ./scripts/fetch-pose-assets.sh  in the repo, then reload — '
+                 + 'pose/vendor/ is ~18MB and is not committed' };
+  }
+  if (badMime.length){
+    return { ok:false, checked:true, kind:'mime', detail:badMime,
+             message: 'SERVER IS SENDING THE WRONG FILE TYPE',
+             hint: 'a module script needs a JavaScript content-type: ' + badMime[0] };
+  }
+  return { ok:true, checked:true };
+}
+
 /* ---- the inference backend, with its fallback ladder ------------------------------------ */
 export async function startWorker(S, { base='./pose', model='lite', delegate='GPU' } = {}){
   const paths = {

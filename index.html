@@ -3154,6 +3154,17 @@ const Cam3 = {
       this.Det = Det; this.Cal = Cal; this.Src = Src; this.EXm = cfg.EX;
       this.det = Det.create(); this.cal = Cal.create(); this.src = Src.create();
 
+      /* Check the build step BEFORE asking for the camera. Getting this order right matters:
+         prompting for camera permission and then failing on a missing download is the worst
+         possible sequence — the player grants a permission, gets an error, and has no idea the
+         two are unrelated. */
+      const pre = await Src.preflight({ base:'./pose', model:'lite' });
+      if (!pre.ok){
+        this.loading = false; this.lastErr = pre.message + ' — ' + pre.detail.join('; ');
+        UI.calShow(true, pre.message, pre.hint, pre.detail.join('  ·  '));
+        return false;
+      }
+
       this.pip = $('pip'); this.pipCam = $('pipCam'); this.pipOv = $('pipOv');
       await Src.openCamera(this.src, {});
       this.pipCam.srcObject = this.src.stream;

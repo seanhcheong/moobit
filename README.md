@@ -36,6 +36,36 @@ The pose modules are **lazy-loaded**, so `index.html` still opens straight off d
 runs in a sandbox with no camera — nothing is imported until you turn the camera on, and a
 failure to load leaves the keyboard game completely untouched.
 
+### "Importing a module script failed"
+
+That is Safari's wording (Chromium says "Failed to fetch dynamically imported module") and it
+almost always means one thing: **`pose/vendor/` is missing, so the MediaPipe bundle 404s.** That
+directory is ~18MB of binary fetched at build time and deliberately not committed, so a fresh
+clone does not have it and `./scripts/fetch-pose-assets.sh` is a required step rather than an
+optional one. A working install has exactly four entries:
+
+```
+pose/vendor/pose_landmarker_lite.task    5.8M
+pose/vendor/vision_bundle.mjs            155K
+pose/vendor/vision_bundle_worker.js      155K
+pose/vendor/wasm/                        ~12M
+```
+
+Turning the camera on now **preflights those URLs before asking for camera permission** and names
+the problem instead of leaking the module loader's error — a real user hit this on a phone, where
+there is no console to check and no way to guess that a download step had been skipped. Two
+messages, for the two things that actually go wrong:
+
+- `POSE ASSETS NOT INSTALLED` — run the fetch script. It needs `npm` and `curl`; a half-finished
+  download looks identical to no download.
+- `SERVER IS SENDING THE WRONG FILE TYPE` — the files are there but your static server is handing
+  back a non-JavaScript content-type for `.mjs`, which a module import refuses. Some older
+  `python3 -m http.server` builds do not know the `.mjs` extension.
+
+Permission order matters here and is deliberate: prompting for the camera and *then* failing on a
+missing download is the worst possible sequence, because the player grants a permission, sees an
+error, and reasonably concludes the two are related.
+
 [`TESTING.md`](TESTING.md) walks through what to look at and how to get it onto a phone.
 [`posecheck.html`](posecheck.html) is the same detection layer with no game attached — a dev tool
 for tuning a misbehaving exercise in isolation, not something you need.
