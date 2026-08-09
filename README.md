@@ -208,6 +208,56 @@ run and the session simply ends before the ramp becomes punishing.
 
 `hiit.mjs` (40 assertions) covers all of it, including that endless keeps every bit of its drama.
 
+### The high bar: what a camera cannot answer
+
+Asked "how do you crouch under the tall bar?" and the answer turned out to be that with a camera you
+**cannot**. Worth recording, because it is a whole class of bug.
+
+The geometry: the high bar's collider is y 1.12-1.72 and spans the full belt. A standing player's
+collider is 0.04-1.62 — overlap, so it hits. Prone is 0.04-0.72 — clears. The only thing that makes
+the penguin prone is `startDive()`, reached solely through `In.diveEdge`, which is set by Shift, the
+mouse, a touch swipe and a gamepad button — and by **nothing in the Signal contract.**
+
+Demonstrated rather than assumed. Every camera-available input against one high bar:
+
+| attempt | result |
+|---|---|
+| stand there | knocked down |
+| `Signal.laneChange` | knocked down |
+| `Signal.jump` | knocked down |
+| a completed rep | knocked down |
+| the live pose mirror | knocked down |
+| keyboard dive | **passed** |
+
+And the high bar sits in the **tier-0** pattern set, so it is among the first things a camera player
+meets. So the spawner now refuses to place an obstacle the active input cannot answer
+(`Signal.canDive`), and retires one already in flight if the camera comes on mid-run — the toggle is
+live, so filtering at spawn time alone leaves a hole exactly one obstacle wide. Measured over a
+4-minute soak at every tier: keyboard 7,614 frames of high bar, camera **0**, while the camera player
+still meets 50,335 obstacle-frames of everything else.
+
+The classifier is derived from geometry, not a list of type names — `full && hit.y0 >= dive.colliderH`
+— so a new obstacle is classified correctly the day it is added. Today only `OT.HIGH` qualifies.
+
+**Why there is no duck detector yet.** A duck is a fast hip drop, so the obvious signal is hip
+velocity. Measured on synthetic bodies, peak downward hip rate in torso-lengths per second:
+
+| movement | rate |
+|---|---|
+| duck, 350-450ms | 1.28 - 1.64 |
+| squat rep, normal | 0.71 - 1.01 |
+| **squat rep, fast 900ms** | **1.52** |
+| burpee | 6.45 - 7.20 |
+| jump pre-crouch | 5.36 |
+
+A fast squat rep lands inside the duck band, and a burpee or a jump's pre-crouch would fire it
+constantly. Rate alone is not enough. The workable design is **context**: only listen for a duck when
+a bar requiring one is actually in reach, which dissolves the ambiguity because a fast hip drop with
+nothing to duck under is just a squat. Flipping `Signal.duck` re-enables the obstacle with no
+spawner change.
+
+`divefair.mjs` (9 assertions) holds the guarantee.
+
 ## The input contract
 
 Everything the player does reaches the game through four semantic events, and nothing below

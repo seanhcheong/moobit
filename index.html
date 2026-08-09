@@ -3283,6 +3283,22 @@ const Signal = {
   },
   jumpHold(v){ if (this.live()) In.jumpHeld = !!v; },
 
+  /* CAN THE ACTIVE INPUT DUCK?
+     The high bar spans the whole belt and sits at y 1.12-1.72. A standing player's collider is
+     0.04-1.62, so it hits; a prone one is 0.04-0.72, so it clears. The only thing that makes the
+     penguin prone is startDive(), reached solely through `In.diveEdge` — set by Shift, the mouse,
+     a touch swipe or a gamepad button, and by nothing in this contract.
+
+     Which means a camera player cannot answer that obstacle at all. Demonstrated, not assumed:
+     standing, lane-changing, jumping, completing a rep and driving the live pose mirror all get
+     knocked down; only the keyboard dive passes. And the high bar is in the TIER-0 pattern set, so
+     it is one of the first things a camera player meets.
+
+     Until the pose layer grows a duck detector, the spawner simply must not place an obstacle the
+     player has no way to answer. `duck` is the flag that flips when it does. */
+  duck:false,
+  canDive(){ return this.source !== 'pose' || this.duck; },
+
   trackingState(s){
     if (s === this.track) return;
     this.track = s;
@@ -3439,7 +3455,12 @@ const Cam3 = {
   onResult(res, t){
     const { Det, Cal, Src } = this;
     Src.unletterbox(this.src, res);
-    Signal.source = 'pose';
+    if (Signal.source !== 'pose'){
+      Signal.source = 'pose';
+      /* the toggle is live mid-run, so clear anything already on the belt that a camera cannot
+         answer — see Signal.canDive */
+      retireUnanswerable();
+    }
     this.inferMs = this.src.stats.inferMs;
 
     /* during calibration the events are consumed by the calibrator, not the game */
@@ -3710,6 +3731,18 @@ const PATTERNS = [
 const Spawn = { gapLeft: 12, lastLead: 9.9, minLead: 99, blocked:0, count:0, patterns:0 };
 function spawnZBase(){ return B.front - TUNING.obs.dropLead; }
 
+/* Does clearing this obstacle REQUIRE going prone? Derived from the geometry rather than a list of
+   type names, so a new obstacle is classified correctly the day it is added: prone must clear it
+   (its underside sits above the prone collider) and it must span the belt, because anything
+   narrower can be answered with a lane change instead. Today only OT.HIGH qualifies. */
+function defNeedsDive(d){
+  return !!(d && d.full && d.hit && d.hit.y0 >= TUNING.dive.colliderH);
+}
+function patternNeedsDive(pat){
+  for (let i=0;i<pat.items.length;i++) if (defNeedsDive(OBS_DEF[pat.items[i].t])) return true;
+  return false;
+}
+
 function trySpawn(dt){
   if (Game.state !== 'play') return;
   if (Run.lanes && Walls.busy()){ Spawn.gapLeft = 2.0; return; }   // the wall gets the corridor
@@ -3733,7 +3766,13 @@ function trySpawn(dt){
   if (lead < LIVE.legibility){ Spawn.gapLeft = 1.0; Spawn.blocked++; return; }
 
   const pool = [];
-  for (let i=0;i<PATTERNS.length;i++) if (PATTERNS[i].tier <= Belt.tier) pool.push(PATTERNS[i]);
+  const canDive = Signal.canDive();
+  for (let i=0;i<PATTERNS.length;i++){
+    if (PATTERNS[i].tier > Belt.tier) continue;
+    if (!canDive && patternNeedsDive(PATTERNS[i])) continue;   // never ask for an input they lack
+    pool.push(PATTERNS[i]);
+  }
+  if (!pool.length){ Spawn.gapLeft = 2.0; return; }
   const pat = pool[Math.floor(rnd()*pool.length)];
   Spawn.minLead = Math.min(Spawn.minLead, lead);
   Spawn.patterns++;
@@ -3804,6 +3843,18 @@ function spawnPattern(pat, sz, lead){
 function despawn(o){
   o.alive = false; o.root.visible = false;
   const i = obsActive.indexOf(o); if (i>=0) obsActive.splice(i,1);
+}
+
+/* The camera toggle is live mid-run, so an obstacle needing an input the NEW source cannot produce
+   can already be on the belt when the switch happens. Filtering at spawn time is not enough on its
+   own; retire the ones in flight too, or the guarantee has a hole exactly one obstacle wide. */
+function retireUnanswerable(){
+  if (Signal.canDive()) return 0;
+  let n = 0;
+  for (let i=obsActive.length-1;i>=0;i--){
+    if (defNeedsDive(OBS_DEF[obsActive[i].type])){ despawn(obsActive[i]); n++; }
+  }
+  return n;
 }
 
 /* separation distance between the player box and an axis-aligned obstacle box */
@@ -5297,7 +5348,7 @@ requestAnimationFrame(frame);
 /* expose a tiny handle for automated feel/perf testing — harmless in normal play */
 window.BR = { TUNING, LIVE, P, Belt, Game, In, Score, Quality, DBG, Post, PLAY, Spawn, Settings, Sfx,
   obsActive, obsPool, FX, Cam, Fx, ST, OT, OBS_DEF, applyInputMode, resize, camera, renderer, scene, rig, THREE,
-  simulate, updatePlayArea, stepPlayer, doJump, startDive, startRagdoll, spawnPattern, spawnZBase, getObstacle,
+  simulate, updatePlayArea, stepPlayer, doJump, startDive, startRagdoll, spawnPattern, spawnZBase, getObstacle, PATTERNS, defNeedsDive, patternNeedsDive, retireUnanswerable,
   curPose, prevPose, FIXED, Ex, exPose, EX_NAMES, EX_SHORT, UI, TEX, world,
   Run, Coins, Walls, Moves, MOVE, Signal, RepDrive, TRACK, IS_LUNGE, beltDragNow, Cam3, Session,
   haltRender(v){ renderHalted = !!v; lastT = 0; acc = 0; },
