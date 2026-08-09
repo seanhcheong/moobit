@@ -160,11 +160,14 @@
   /* the phone ends up on the floor a couple of metres away, so anything that must be read
      while standing is oversized on purpose. Detail goes to the audio cues, not to here. */
   #wallArc{display:block;margin:6px auto 0}
-  /* the round readout: which interval you are in, and whether you are working or recovering.
-     Sits under the score, large enough to read from three metres because that is where you are. */
-  #roundChip{position:absolute;left:50%;top:calc(20px + var(--sat));transform:translateX(-50%);
-    display:none;padding:5px 13px;border-radius:999px;font:700 13px/1 ui-sans-serif,system-ui,sans-serif;
-    letter-spacing:.12em;white-space:nowrap;background:rgba(12,16,18,.62);
+  /* The round readout: which interval you are in, and whether you are working or recovering.
+     Stacked in the LEFT column under Coins, not centred — top-centre is already occupied by the
+     belt-tier panel and the tracking chip, and putting it there hid it behind them completely.
+     Found by screenshotting a real session; the text was legible only as "RO…VER" poking out from
+     under the tier readout. */
+  #roundChip{position:absolute;left:calc(14px + var(--sal));top:calc(140px + var(--sat));
+    display:none;padding:5px 12px;border-radius:999px;font:700 13px/1 ui-sans-serif,system-ui,sans-serif;
+    letter-spacing:.1em;white-space:nowrap;background:rgba(12,16,18,.62);
     border:1px solid rgba(255,255,255,.16);color:#e8ece9;backdrop-filter:blur(6px)}
   #roundChip.on{display:block}
   #roundChip.rest{border-color:rgba(120,220,200,.5);color:#a8ead9}
@@ -4617,16 +4620,21 @@ const UI = {
      workout is the work — reps done and minutes moving. */
   showDead(finished){
     const L = $('deadLbl');
+    const btn = $('btnAgain');
     if (finished){
       L.textContent = 'Shift Complete';
       this.deadScore.textContent = String(Signal.count);
       this.deadSub.innerHTML = 'REPS  ·  ' + fmtMinSec(Session.workT + Session.restT)
                              + '  ·  ' + Session.level.toUpperCase();
+      /* "RUN AGAIN" is arcade language, and putting it under a completed workout quietly undoes
+         the whole point of having a separate screen — it reads as "you lost, retry". */
+      if (btn) btn.textContent = 'TRAIN AGAIN';
     } else {
       L.textContent = 'Run Over';
       this.deadScore.textContent = String(Math.floor(Score.total()));
       const isBest = Score.total() >= Score.best - 0.5;
       this.deadSub.innerHTML = isBest ? 'NEW BEST' : 'BEST ' + Math.floor(Score.best);
+      if (btn) btn.textContent = 'RUN AGAIN';
     }
     this.showCard(this.cardDead, true);
   },
