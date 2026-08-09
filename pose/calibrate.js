@@ -43,7 +43,7 @@ export function create(){
     stage: STAGE.IDLE,
     cal: defaultCalibration(),
     frameHeldMs: 0,
-    guidance: '',
+    guidance: '', guideT: 0, frameOk: false,
     samples: { shoulderW:[], torsoLen:[], legLen:[], hipY:[], ankleY:[], shoulderY:[], stance:[] },
     /* per-exercise observed extremes for this person */
     obs: {},
@@ -53,7 +53,8 @@ export function create(){
     recent: [], recentT: 0,
     reset(){
       this.stage = STAGE.IDLE; this.cal = defaultCalibration();
-      this.frameHeldMs = 0; this.guidance = ''; this.exIdx = 0;
+      this.frameHeldMs = 0; this.guidance = ''; this.guideT = 0; this.frameOk = false;
+      this.exIdx = 0;
       for (const k in this.samples) this.samples[k].length = 0;
       this.obs = {};
       this.recent.length = 0; this.recentT = 0;
@@ -64,26 +65,43 @@ export function create(){
 export function begin(c){ c.reset(); c.stage = STAGE.FRAME; }
 
 /* ---- stage 1: framing, with guidance specific enough to act on -------------------------- */
-export function checkFraming(frame, body){
+export const holdMs = ()=> CONFIG.calib.frameHoldMs;
+
+/* `wasOk` widens every threshold slightly once you are already passing. Without it, a body
+   sitting right on a boundary flips ok/not-ok every inference frame and the guidance text
+   strobes between the specific message and the default — which reads as the screen flickering
+   rather than as feedback. */
+export function checkFraming(frame, body, wasOk){
   const g = [];
+  const h = wasOk ? 1 : 0;                      // hysteresis, applied per threshold below
   const vis = (i)=> frame.img[i].v;
   const lowAnkle = Math.min(vis(LM.ANKLE_L), vis(LM.ANKLE_R));
   const lowWrist = Math.min(vis(LM.WRIST_L), vis(LM.WRIST_R));
   const lowHip   = Math.min(vis(LM.HIP_L), vis(LM.HIP_R));
-  const bar = CONFIG.common.visGateFrame;
+  const bar = CONFIG.common.visGateFrame - h*0.10;
 
   if (lowAnkle < bar) g.push('STEP BACK — WE CANNOT SEE YOUR FEET');
   if (lowWrist < bar) g.push('RAISE YOUR ARMS — WE NEED TO SEE YOUR HANDS');
   if (lowHip < bar)   g.push('STEP BACK');
   /* out of frame sideways: the hips have drifted off centre in image space */
-  if (Math.abs(body.hipX) > 1.6) g.push(body.hipX < 0 ? 'MOVE RIGHT' : 'MOVE LEFT');
+  if (Math.abs(body.hipX) > 1.6 + h*0.25) g.push(body.hipX < 0 ? 'MOVE RIGHT' : 'MOVE LEFT');
   /* too close: the body fills the frame, so the head or hands will clip when you reach up */
-  if (body.torsoLen > 0.42) g.push('STEP BACK');
-  if (body.torsoLen < 0.10) g.push('COME CLOSER');
+  if (body.torsoLen > 0.42 + h*0.03) g.push('STEP BACK');
+  if (body.torsoLen < 0.10 - h*0.015) g.push('COME CLOSER');
   /* the head near the top of frame from a low camera means the phone is tilted too flat */
-  if (frame.img[LM.NOSE].y > 0.96) g.push('TILT THE PHONE BACK A LITTLE');
+  if (frame.img[LM.NOSE].y > 0.96 + h*0.02) g.push('TILT THE PHONE BACK A LITTLE');
 
   return { ok: g.length === 0, guidance: g[0] || '' };
+}
+
+/* A message stays put for a beat before another can replace it. Two conditions taking turns
+   at the boundary would otherwise swap the text faster than anyone can read it. */
+const GUIDE_HOLD_MS = 700;
+function setGuidance(c, text, dt){
+  c.guideT = (c.guideT || 0) + dt;
+  if (text === c.guidance) return;
+  if (c.guidance && c.guideT < GUIDE_HOLD_MS) return;   // let the current one finish being read
+  c.guidance = text; c.guideT = 0;
 }
 
 /* ---- the driver: feed it every body, it walks itself through the stages ----------------- */
@@ -93,8 +111,9 @@ export function step(c, frame, body, ev){
 
   if (c.stage === STAGE.FRAME){
     /* judged with the arms up, because that is the tallest the session ever gets */
-    const r = checkFraming(frame, body);
-    c.guidance = r.guidance;
+    const r = checkFraming(frame, body, c.frameOk);
+    c.frameOk = r.ok;
+    setGuidance(c, r.guidance, dt);
     c.frameHeldMs = r.ok ? c.frameHeldMs + dt : 0;
     if (c.frameHeldMs >= K.frameHoldMs){
       c.stage = STAGE.APOSE; c.guidance = 'HOLD STILL, ARMS OUT';

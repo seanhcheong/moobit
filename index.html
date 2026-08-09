@@ -3137,7 +3137,10 @@ const Cam3 = {
     if (!this.ready) return;
     this.Cal.begin(this.cal);
     Game.pause(true);                        // the run waits; nobody calibrates mid-sprint
-    UI.calShow(true, 'CALIBRATING', '', '');
+    /* seed with the real first instruction, not an empty string — an empty frame between
+       WARMING UP and the first guidance reads as a blink */
+    UI.calShow(true, 'FRAMING', 'STAND BACK, ARMS OVERHEAD',
+               'we check with your arms up, because that is the tallest you get', 0);
   },
 
   /* one inference result: run the detector, then the calibration state machine on top */
@@ -3206,7 +3209,7 @@ const Cam3 = {
       title = 'FRAMING';
       big = C.guidance || 'HOLD IT — ARMS UP';
       sub = 'we check with your arms overhead, because that is the tallest you get';
-      prog = clamp01(C.frameHeldMs/1200);
+      prog = clamp01(C.frameHeldMs/this.Cal.holdMs());
     } else if (C.stage === K.APOSE){
       title = 'MEASURING';
       big = 'HOLD STILL, ARMS OUT';
@@ -4022,7 +4025,7 @@ const UI = {
     this.score=$('score'); this.best=$('best'); this.tierNum=$('tierNum'); this.fill=$('speedFill');
     this.scoreBox=$('scoreBox'); this.tierBox=$('tierBox'); this.surgeEl=$('surge'); this.vig=$('vig');
     this.cardStart=$('cardStart'); this.cardCal=$('cardCal'); this.cardDead=$('cardDead');
-    this._calTitle=this._calBig=this._calSub=''; this._calProg=-1; this.deadScore=$('deadScore'); this.deadSub=$('deadSub');
+    this._calTitle=this._calBig=this._calSub=''; this._calProg=-1; this._calOn=false; this.deadScore=$('deadScore'); this.deadSub=$('deadSub');
     this.hint=$('hint'); this.dbg=$('dbg'); this.setPanel=$('settings'); this.setCard=$('setCard');
     this.gymBar=$('gymBar'); this.gymName=$('gymName'); this.gymReps=$('gymReps');
     this.moveBar=$('moveBar'); this.coinBox=$('coinBox'); this.coinEl=$('coins');
@@ -4190,8 +4193,12 @@ const UI = {
     if (el.dataset.key) Settings[el.dataset.key] = !!v;
   },
   calShow(on, title, big, sub, prog){
-    this.showCard(this.cardCal, !!on);
-    if (!on) return;
+    /* showCard cancels and restarts an entrance tween, so calling it every inference result
+       re-animated the card 25 times a second — which is what the flicker was. Only ever call
+       it on an actual transition. */
+    const want = !!on;
+    if (this._calOn !== want){ this._calOn = want; this.showCard(this.cardCal, want); }
+    if (!want) return;
     if (title !== undefined && this._calTitle !== title){ this._calTitle = title;
       $('calStage').textContent = title; }
     if (big !== undefined && this._calBig !== big){ this._calBig = big;
