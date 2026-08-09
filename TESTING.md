@@ -94,10 +94,10 @@ Things I expect to bite on the phone, so worth watching for:
 
 ## 5. If you want to help me tune
 
-Press **Record**, do 10–20 reps, press it again, then **Save JSON**.
+Open `posecheck.html`, press **Record**, do 10–20 reps, press it again, then **Save JSON**.
 
 That writes the **landmark stream only** — 33 coordinate triples per frame plus timestamps. No
-pixels are captured, stored or transmitted, by this page or by the app. Send me that file and I
+pixels are captured, stored or transmitted, by that page or by the game. Send me the file and I
 can replay it through the state machines here, at real speed, headless, and tune thresholds
 against your actual movement instead of my model of a body.
 
@@ -107,10 +107,14 @@ not yet proven to match a real person.
 
 ---
 
-## What is not built yet
+## What is still missing
 
-The camera does not control the penguin. The pose layer emits the four events the game speaks,
-and the game consumes those four events, but they are not connected — that is the next step.
-`posecheck.html` proves the left-hand side works; the keyboard build proves the right-hand side
-works. Wiring them is small once the detection is trusted, and doing it in that order is
-deliberate: an integration built on unverified detection would be debugging two things at once.
+- **The native wrapper.** iOS needs the `WKUIDelegate` permission method or you get prompted on
+  every single launch; Android needs `onPermissionRequest` overridden. Until then the camera
+  works in a browser but not in a wrapped app.
+- **Audio cues.** With the phone on the floor you cannot read the small text while standing, so
+  rejections and wall callouts need to be spoken or toned. Currently they are visual only.
+- **Real thresholds.** See section 5. Everything in `pose/config.js` is verified against
+  synthetic bodies, which proves the machines behave, not that the numbers match a person.
+- **Push-up certainty.** It passes on synthetic bodies from a floor-front camera using shoulder
+  height above the hands. I trust it least of the five.
