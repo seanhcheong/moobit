@@ -126,10 +126,24 @@ that line knows what produced them:
 
 ```
 laneChange(direction)        -1 | +1
+jump() / jumpHold(bool)      a real jump, fired at takeoff
 repProgress(kind, phase)     0..1, continuously, while a rep is happening
 repCompleted(kind, form)     form 0..1
 trackingState(state)         'good' | 'degraded' | 'lost'
 ```
+
+**Jumping is a jump.** Leave the floor and the penguin leaves the belt — which matters, because
+coins arc so you have to jump for them and a ground-down wall stub can be hopped. It fires at
+takeoff, not at the apex, because waiting for the top of the jump would add 200–300ms to an input
+that already costs the pipeline 150–350ms. Variable height comes from the *real* height: the hold
+engages at takeoff and drops early if the jump turns out small, so a bigger jump gives a bigger
+game jump with no added latency. Measured: a big jump never drops the hold mid-air, a small hop
+drops it 12 times.
+
+It also keeps its own standing baseline rather than depending on calibration, so it works from the
+first second and survives you moving to a different spot. And it stands down while a jumping jack
+or a burpee is mid-rep — both of those contain a hop, and the penguin should not leap in the
+middle of a rep it is already performing.
 
 Keyboard, on-screen buttons and a camera watching a body are interchangeable backends. The
 keyboard one is not a shortcut around the contract: a keypress starts a phase ramp that emits

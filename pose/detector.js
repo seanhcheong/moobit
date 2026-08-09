@@ -21,6 +21,7 @@ import * as Jack from './jack.js';
 import * as Pushup from './pushup.js';
 import * as Burpee from './burpee.js';
 import * as Lunge from './lunge.js';
+import * as Jump from './jump.js';
 
 export const TRACK = { GOOD:'good', DEGRADED:'degraded', LOST:'lost' };
 
@@ -46,12 +47,14 @@ export function create(){
       [EX.BURPEE]: Burpee.create(),
     },
     lunge: Lunge.create(),
+    jumpM: Jump.create(),
     want: EX.JACK,              // which exercise the wall in front is asking for
     track: TRACK.GOOD,
     lastFrameT: -1e9,
     /* reused every frame; the event surface allocates nothing */
-    ev: { progress:false, phase:0, completed:false, form:1, reject:'', lane:0 },
-    stats: { frames:0, progress:0, completed:0, rejected:0, lanes:0, lost:0 },
+    ev: { progress:false, phase:0, completed:false, form:1, reject:'', lane:0,
+          jump:false, jumpHold:null },
+    stats: { frames:0, progress:0, completed:0, rejected:0, lanes:0, lost:0, jumps:0 },
   };
 }
 
@@ -86,7 +89,7 @@ function trackOf(d, tMs){
 export function push(d, res, tMs, sink){
   const ev = d.ev;
   ev.progress = false; ev.phase = 0; ev.completed = false; ev.form = 1;
-  ev.reject = ''; ev.lane = 0;
+  ev.reject = ''; ev.lane = 0; ev.jump = false; ev.jumpHold = null;
 
   adapt(d.frame, res, tMs);
   if (d.frame.valid) d.lastFrameT = tMs;
@@ -101,7 +104,7 @@ export function push(d, res, tMs, sink){
   if (track === TRACK.LOST || !d.frame.valid){
     /* freeze everything rather than reasoning about a body we cannot see */
     for (const k in d.mach) d.mach[k].reset();
-    d.lunge.reset();
+    d.lunge.reset(); d.jumpM.reset();
     return ev;
   }
 
@@ -113,6 +116,23 @@ export function push(d, res, tMs, sink){
   if (ev.lane !== 0){
     d.stats.lanes++;
     if (sink && sink.laneChange) sink.laneChange(ev.lane);
+  }
+
+  /* Jumping is always live too — except while a rep that CONTAINS a hop is in flight. A
+     jumping jack hops on every rep and a burpee ends with a jump, so letting the jump
+     detector run through those would make the penguin leap in the middle of a rep it is
+     already busy performing. */
+  const hoppy = d.want === EX.JACK || d.want === EX.BURPEE;
+  const midRep = hoppy && d.mach[d.want] &&
+                 d.mach[d.want].state !== 'IDLE' && d.mach[d.want].state !== 'CLOSED' &&
+                 d.mach[d.want].state !== 'STAND';
+  if (!midRep){
+    Jump.step(d.jumpM, d.frame, d.body, d.cal, ev);
+    if (ev.jump){
+      d.stats.jumps++;
+      if (sink && sink.jump) sink.jump();
+    }
+    if (ev.jumpHold !== null && sink && sink.jumpHold) sink.jumpHold(ev.jumpHold);
   }
 
   /* exactly one rep machine runs */
@@ -142,6 +162,7 @@ export function debugState(d){
     want: d.want, track: d.track,
     state: m ? m.state : '-', phase: m ? +m.phase.toFixed(3) : 0,
     lungeState: d.lunge.state, refractory: Math.round(d.lunge.refractory),
+    jumpState: d.jumpM.state, jumpRise: +d.jumpM.prevRise.toFixed(3), jumps: d.jumpM.jumps,
     knee: +b.knee.toFixed(1), elbow: +b.elbow.toFixed(1),
     torsoTilt: +b.torsoTilt.toFixed(1), torsoHoriz: +b.torsoHoriz.toFixed(1),
     shoulderY: +b.shoulderY.toFixed(3), ankleSpan: +b.ankleSpan.toFixed(3),

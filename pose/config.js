@@ -73,6 +73,22 @@ export const CONFIG = {
     secondary: ['knee'],
   },
 
+  /* ---- jump — a control input, not a rep -------------------------------------------- */
+  jump: {
+    takeoffRise: 0.055,    // x legLength above the standing ankle line — fires here, at takeoff
+    bigRise: 0.13,         // x legLength — above this the game gets a full-height jump
+    landRise: 0.020,       // x legLength — back below this counts as landed
+    minUpVel: 0.004,       // per frame, must still be going up when it fires
+    minAirMs: 140,
+    maxAirMs: 1600,        // longer than this and the baseline was wrong; re-seed it
+    holdDecideMs: 110,     // how long to wait before judging whether it was a small jump
+    refractoryMs: 420,
+    /* the standing baseline follows you slowly, and asymmetrically: quick to follow the ankle
+       line down (you moved, or it was mis-seeded) and very slow to follow it up, so it cannot
+       creep upward during a jump and swallow the signal */
+    baseTrackDown: 0.05, baseTrackUp: 0.004,
+  },
+
   /* ---- 1: push-up — the hard one ----------------------------------------------------- */
   /* The phone is on the floor in FRONT of the player, angled up. That solves framing but not
      legibility: the torso points away from the lens, so the shoulder-to-hip vector projects

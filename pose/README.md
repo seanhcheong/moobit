@@ -21,6 +21,7 @@ without dragging the renderer along.
 | `body.js` | Landmarks → the handful of scale-free numbers the machines reason about. |
 | `squat.js` `jack.js` `pushup.js` `burpee.js` | One rep machine each. |
 | `lunge.js` | The lane-change control. Not a rep counter — a button, held to a button's latency budget. |
+| `jump.js` | A real jump. Also a button: fires at takeoff, with variable height taken from the actual jump. |
 | `calibrate.js` | Framing check, A-pose measurement, one rep per exercise, personal thresholds. |
 | `detector.js` | Owns the five, routes to whichever exercise the wall is asking for, emits events. |
 

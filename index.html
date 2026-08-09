@@ -2948,6 +2948,7 @@ const Walls = {
    interchangeable backends; the game only ever sees these calls.
 
        laneChange(dir)            -1 | +1
+       jump() / jumpHold(bool)    a real jump, fired at takeoff
        repProgress(kind, phase)   0..1, continuously, while a rep is happening
        repCompleted(kind, form)   form 0..1
        trackingState(s)           'good' | 'degraded' | 'lost'
@@ -3001,6 +3002,19 @@ const Signal = {
     Run.repDone(kind);
     return true;
   },
+
+  /* A real jump. Routed through the same jumpEdge the spacebar sets, so it inherits coyote
+     time, the jump buffer and the whole feel — a second jump path would be a second set of
+     bugs. `jumpHold` carries variable height: the pose backend fires at takeoff with the hold
+     on, then drops it if the jump turns out small, which is how a real jump height reaches the
+     game without waiting to see the apex first. */
+  jump(){
+    if (!this.live()) return false;
+    In.jumpEdge = true; In.jumpHeld = true;
+    this.jumps = (this.jumps||0) + 1;
+    return true;
+  },
+  jumpHold(v){ if (this.live()) In.jumpHeld = !!v; },
 
   trackingState(s){
     if (s === this.track) return;
@@ -3185,6 +3199,7 @@ const Cam3 = {
   /* calibration consumes reps itself, so it gets its own sink rather than the game's */
   calSink: {
     laneChange(){},
+    jump(){}, jumpHold(){},        /* nobody should be launched mid-calibration */
     repProgress(){},
     repCompleted(kind){
       const C = Cam3;
@@ -4591,6 +4606,7 @@ function camDbg(){
       Cam3.det.track + '\n' +
     'want     ' + (EX_NAMES[st.want]||'?') + '  ' + st.state + '  ph ' + st.phase.toFixed(2) +
       '  vis ' + st.vis.toFixed(2) + '\n' +
+    'jump     ' + st.jumpState + '  rise ' + st.jumpRise.toFixed(3) + '  x' + st.jumps + '\n' +
     'body     knee ' + b.knee.toFixed(0) + '  elb ' + b.elbow.toFixed(0) +
       '  tilt ' + b.torsoTilt.toFixed(0) + '  horiz ' + b.torsoHoriz.toFixed(0) + '\n' +
     'body2    push ' + b.pushDepth.toFixed(2) + '  span ' + b.ankleSpan.toFixed(2) +
@@ -4598,7 +4614,7 @@ function camDbg(){
     'cal      squat ' + d.cal.squatBottomKnee.toFixed(0) + '  jack ' + d.cal.jackOpenSpan.toFixed(2) +
       '  lunge ' + d.cal.lungeFullSpan.toFixed(2) + '  ' + (d.cal.ready?'ready':'DEFAULTS') + '\n' +
     'pose ev  ok ' + st.stats.completed + '  no ' + st.stats.rejected +
-      '  lane ' + st.stats.lanes + '  lost ' + st.stats.lost;
+      '  lane ' + st.stats.lanes + '  jump ' + st.stats.jumps + '  lost ' + st.stats.lost;
 }
 
 const DBG = {
