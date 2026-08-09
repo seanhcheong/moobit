@@ -12,6 +12,11 @@ cd "$(dirname "$0")/.."
 V="pose/vendor"
 MP_VERSION="${MP_VERSION:-1.0.1}"
 MODEL="${MODEL:-lite}"          # lite | full  — lite is the default at runtime too
+# SHIP=1 trims what a shipped app does not need: sourcemaps, and the no-SIMD WASM fallback.
+# That fallback is 11MB and only matters on devices without WASM SIMD, which is roughly
+# pre-iOS-16.4 and pre-Chrome-91. Dev builds keep both, so a console stays useful and an
+# older device still runs.
+SHIP="${SHIP:-0}"
 
 mkdir -p "$V"
 echo "→ @mediapipe/tasks-vision@$MP_VERSION"
@@ -29,21 +34,23 @@ SRC="$TMP/node_modules/@mediapipe/tasks-vision"
 # the worker path works on any server with no configuration.
 cp "$SRC/vision_bundle.mjs" "$V/"
 cp "$SRC/vision_bundle.cjs" "$V/vision_bundle_worker.js"
-# sourcemaps, under the names the bundles actually reference, so a dev console stays clean
-cp "$SRC/vision_bundle.mjs.map" "$V/vision_bundle_mjs.js.map" 2>/dev/null || true
-cp "$SRC/vision_bundle.cjs.map" "$V/vision_bundle_cjs.js.map" 2>/dev/null || true
 mkdir -p "$V/wasm"
-# the SIMD build plus the nosimd fallback; MediaPipe picks per device capability
-cp "$SRC/wasm/vision_wasm_internal.js"        "$V/wasm/"
-cp "$SRC/wasm/vision_wasm_internal.wasm"      "$V/wasm/"
-cp "$SRC/wasm/vision_wasm_nosimd_internal.js" "$V/wasm/"
-cp "$SRC/wasm/vision_wasm_nosimd_internal.wasm" "$V/wasm/"
+cp "$SRC/wasm/vision_wasm_internal.js"   "$V/wasm/"
+cp "$SRC/wasm/vision_wasm_internal.wasm" "$V/wasm/"
+if [ "$SHIP" = "1" ]; then
+  echo "  ship build: skipping sourcemaps and the 11MB no-SIMD fallback"
+else
+  # sourcemaps under the names the bundles reference, so a dev console stays clean
+  cp "$SRC/vision_bundle.mjs.map" "$V/vision_bundle_mjs.js.map" 2>/dev/null || true
+  cp "$SRC/vision_bundle.cjs.map" "$V/vision_bundle_cjs.js.map" 2>/dev/null || true
+  cp "$SRC/wasm/vision_wasm_nosimd_internal.js"   "$V/wasm/"
+  cp "$SRC/wasm/vision_wasm_nosimd_internal.wasm" "$V/wasm/"
+fi
 
 echo "→ pose_landmarker_$MODEL (float16)"
 curl -sSLf -o "$V/pose_landmarker_$MODEL.task" \
   "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_$MODEL/float16/1/pose_landmarker_$MODEL.task"
 
 echo
-echo "done:"
-du -sh "$V"
-ls -la "$V" "$V/wasm"
+echo "done: $(du -sh "$V" | cut -f1) in $V"
+[ "$SHIP" = "1" ] || echo "  SHIP=1 ./scripts/fetch-pose-assets.sh trims this for an app bundle"

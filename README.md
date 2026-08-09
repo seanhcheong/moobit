@@ -356,6 +356,36 @@ that change how the game feels, in the order I would touch them:
 
 ---
 
+## Size
+
+Measured, for a `SHIP=1` build:
+
+| | on disk | |
+|---|---|---|
+| MediaPipe WASM | 12.08 MB | the pose runtime |
+| Pose model (lite) | 5.78 MB | float16 weights |
+| three.js (vendored) | 1.27 MB | needed for an offline app bundle |
+| The game | 0.24 MB | one `index.html`, everything generated in code |
+| Pose layer source | 0.09 MB | five state machines, calibration, normalization |
+| MediaPipe JS glue | 0.16 MB | |
+| **Total** | **19.6 MB** | **~8.9 MB** over the air after store compression |
+
+That is small for a game with on-device pose estimation — the App Store's cellular download limit
+is 200 MB and a typical mobile game is 5–20× this. **94% of it is the vision runtime**, and none of
+that is code anyone wrote here: the game itself is a quarter of a megabyte because every mesh is
+generated and every texture is painted to a canvas at boot.
+
+Run the fetch script with `SHIP=1` for an app bundle. It drops the sourcemaps and the 11 MB
+no-SIMD WASM fallback, which only matters on devices predating WASM SIMD (roughly pre-iOS-16.4,
+pre-Chrome-91). Dev builds keep both, so the console stays useful and an older device still runs.
+
+If 19.6 MB ever needs to be less, in order of what it costs you:
+
+- **Quantise the model.** An int8 pose model is roughly half the float16 one, for some accuracy.
+- **Strip the WASM.** `wasm-opt -Oz` on the MediaPipe binary typically takes 10–20% off.
+- **Download the model on first run** instead of bundling it. Saves 5.8 MB of install size but
+  breaks the offline guarantee, which is why it is bundled now.
+
 ## Performance
 
 Budgets, and what was actually measured (see `CHANGELOG.md` for the method and its limits):
