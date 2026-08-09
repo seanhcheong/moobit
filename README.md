@@ -149,6 +149,65 @@ obstacles stop spawning 14 belt-units before a wall is due, and a wall waits for
 to drain before it spawns. Solid lane blockers can never seal all three lanes inside a
 16-unit window, which is comfortably more than one lane change.
 
+## Two modes: the arcade run and the workout
+
+Same machinery, one difference — **what the belt is counting toward.** Endless counts toward
+nothing and ends when something knocks you down. The workout counts toward a fixed number of work
+intervals and ends when you finish it.
+
+That distinction is not cosmetic. Every session in endless mode ends in failure, which is right for
+a score chase and useless for something you open daily: you never once close the app having
+succeeded. `Game.finish()` exists alongside `Game.over()` for exactly that reason, with its own card
+and its own sound.
+
+### Why the workout had to be re-paced
+
+Computed from the shipped tuning before writing any of it: the tier ladder is 4,100 belt units,
+which is 11.4 minutes of running, and at `wallEvery` of 74–112 units that is **51 walls and 168
+reps in one run**. A hundred and sixty-eight burpees and squats is not a session. Those numbers were
+set when a keypress committed a rep in 0.42s; a real rep takes over two seconds.
+
+So the workout is a bounded HIIT protocol instead. Measured, with a body doing its reps:
+
+| level | rounds | work | rest | ratio | reps | length | knocked down |
+|---|---|---|---|---|---|---|---|
+| easy | 8 | 16.0s | 30.7s | 1:1.9 | 42 | 6.7 min | 0 |
+| medium | 10 | 19.3s | 25.1s | 1:1.3 | 70 | 7.9 min | 0 |
+| hard | 12 | 21.2s | 22.6s | 1:1.1 | 96 | 9.3 min | 0 |
+
+A **level is a work:rest ratio**, not a difficulty slider on the game. It changes how long you get
+to breathe and how many rounds you do — nothing else.
+
+### Reps are derived, so every round is equal work
+
+A burpee costs about three squats, so a fixed rep count would make "4 reps" mean three different
+workouts depending on which exercise the wall drew. Instead `need` comes from the work interval
+divided by what a rep of *that* exercise costs, then bounded by what the runway can guarantee. One
+20-second interval is 9 squats, 8 push-ups, 16 jacks or 6 burpees.
+
+**And the cost is learned.** `HI.repSec` is only a seed. Measured: a body at 3.8s per rep — slower
+than average, which is most people by the end of a set — was knocked down by **8 of 10 walls**,
+because every wall was sized for someone faster. The session now measures the gap between
+consecutive reps of the same kind, blends it in, and persists it to `br.pace`. Second session for
+the same body: walls resize from 7 reps to 4, and **knockdowns go from 2 to 0**.
+
+### The drama belongs to endless alone
+
+Belt surges and stutters are what make the arcade run feel dangerous, and they are exactly what a
+daily workout must not do — nobody wants the floor to lurch while they are at the bottom of a
+push-up. A calm session skips the scheduling entirely rather than damping the effect, so no surge
+can be halfway through when a session starts. The spawn klaxon becomes a chime: a workout announces
+the next exercise, it does not alarm you.
+
+**The running is still fast.** The recovery segment between walls is 20–30s of free belt, and that
+is the cardio half of the workout, not a rest screen — measured at **6.3 u/s of a 7.6 maximum with
+6.3 obstacles on screen at a time, peaking at 11.** Dodging, lane changes and coin chains all live
+there. The `tierCap` per level turns out to be mostly non-binding: a 9-minute session covers ~3,400
+units and the top tiers start at 3,050 and 4,100, so the belt ramps exactly as it does in the arcade
+run and the session simply ends before the ramp becomes punishing.
+
+`hiit.mjs` (40 assertions) covers all of it, including that endless keeps every bit of its drama.
+
 ## The input contract
 
 Everything the player does reaches the game through four semantic events, and nothing below
@@ -373,7 +432,10 @@ that change how the game feels, in the order I would touch them:
 | `run.laneTime` | `0.24s` | How long a lane change takes, at any belt width. Below ~0.18s it stops reading as a lunge; above ~0.32s you cannot react to a late obstacle. |
 | `run.laneFrac` | `0.62` | Lane spacing as a fraction of the playable half-width. Raise it and the outer lanes hug the edges; lower it and the three lanes bunch up in the middle. |
 | `run.laneYaw` / `laneBank` | `0.38` / `0.30` rad | The sidestep read. Uncapped yaw sends the penguin running fully sideways at ~60°; the bank is driven straight off the lateral rate so the lean survives the cap. |
-| `run.wallReps` | `[2, 4]` | Courses of brickwork, scaled by belt tier. Four is about the most you can hit cleanly before the wall arrives. |
+| `run.wallReps` | `[2, 4]` | Courses of brickwork in ENDLESS mode, scaled by belt tier. Four is about the most you can hit cleanly before the wall arrives. The workout derives its own count instead — see `hiit.repSec`. |
+| `hiit.levels` | 8/10/12 rounds | A level is a work:rest ratio (1:1.9 / 1:1.3 / 1:1.1) and a round count, not a difficulty slider on the game. `tierCap` is belt speed and is deliberately high — the recovery segment is the cardio half. |
+| `hiit.repSec` | `[2.2, 2.4, 1.2, 3.5]` | Seconds one rep costs, per exercise — only a SEED. The session measures the player's real pace and persists it to `br.pace`, which is what stops a slower body being knocked down by walls sized for someone faster. |
+| `hiit.warmupSec` | `18s` | Belt-only movement before round one. Also where framing and tracking settle. Die during it and you restart it, which is why the endless soak tests set `Settings.hiit = false`. |
 | `run.repGap` / `repSlack` | `0.20s` / `1.35` | Minimum time between reps, and the margin the spawner assumes on top of it. Drop `repSlack` toward 1.0 and walls start arriving that are only *theoretically* survivable. |
 | `run.repDurBody` | `2.2s` | What the spawner assumes one *real* rep takes. This is the number the whole wall-timing model hangs off; `repDur` (0.42s) is only how long the keyboard's stand-in animation plays. Raise it and walls get further apart and more forgiving. |
 | `run.workBeltMul` | `0.20` | Belt speed while a rep is in flight, as a fraction of tier speed. This is what buys a slow body time. At 1.0 the wall runs on a pure timer and only very fast reps survive; below ~0.15 the world reads as stopped dead rather than slowed. |

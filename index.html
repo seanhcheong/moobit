@@ -160,6 +160,14 @@
   /* the phone ends up on the floor a couple of metres away, so anything that must be read
      while standing is oversized on purpose. Detail goes to the audio cues, not to here. */
   #wallArc{display:block;margin:6px auto 0}
+  /* the round readout: which interval you are in, and whether you are working or recovering.
+     Sits under the score, large enough to read from three metres because that is where you are. */
+  #roundChip{position:absolute;left:50%;top:calc(20px + var(--sat));transform:translateX(-50%);
+    display:none;padding:5px 13px;border-radius:999px;font:700 13px/1 ui-sans-serif,system-ui,sans-serif;
+    letter-spacing:.12em;white-space:nowrap;background:rgba(12,16,18,.62);
+    border:1px solid rgba(255,255,255,.16);color:#e8ece9;backdrop-filter:blur(6px)}
+  #roundChip.on{display:block}
+  #roundChip.rest{border-color:rgba(120,220,200,.5);color:#a8ead9}
   #trackChip{position:absolute;left:50%;top:calc(58px + var(--sat));transform:translateX(-50%);
     padding:6px 15px 7px;border-radius:13px;font-size:12px;letter-spacing:.16em;
     background:rgba(16,22,38,.76);border:2px solid rgba(255,255,255,.18);opacity:0;
@@ -236,6 +244,8 @@
 
     <div id="coinBox" class="panel"><span class="lbl">Coins</span><span id="coins" class="num">0</span></div>
 
+    <div id="roundChip">ROUND 1/10</div>
+
     <div id="wallCue">
       <div id="wallEx" class="num">SQUAT</div>
       <div id="wallReps" class="lbl">3 TO GO</div>
@@ -311,7 +321,7 @@
     </div>
 
     <div id="cardDead" class="card panel">
-      <div class="lbl">Run Over</div>
+      <div class="lbl" id="deadLbl">Run Over</div>
       <div id="deadScore" class="num big">0</div>
       <div class="sub" id="deadSub">&nbsp;</div>
       <button class="btn" id="btnAgain">RUN AGAIN</button>
@@ -542,6 +552,7 @@ const TUNING = {
     wallEvery: [74, 112],// belt units between walls; the gap is where obstacles live
     wallQuiet: 14,       // belt units before a wall in which obstacles stop spawning
     maxObs: 6,           // obstacles fill the gaps between walls, so fewer of them at once
+    maxObsRest: 9,       // …but a recovery segment is pure dodging, so it carries real traffic
     /* Part D: a person doing burpees cannot be paced like a thumb on glass. Lane mode runs
        its own, much slower ladder — the difficulty comes from reps per wall and how often
        walls arrive, not from belt velocity. Derived, not guessed: a wall spawns 34 units
@@ -575,6 +586,48 @@ const TUNING = {
     effortBudget: 5.0,   // s of continuous easing without a completed rep
     effortRefill: 1.5,   // budget seconds recovered per second of not easing
     coinEvery: [17, 30],
+  },
+
+  /* ---- the HIIT session ---------------------------------------------------------------
+     Endless mode has no structure: the belt ramps through every tier until something hits you,
+     and every session ends in failure. That is the right shape for an arcade score and the wrong
+     shape for a habit, so the workout is a separate thing — a bounded number of work intervals
+     with real recovery between them, which is what HIIT actually is.
+
+     Measured from the shipped numbers before writing this: the full tier ladder is 4100 belt
+     units, and at wallEvery [74,112] that is 51 walls and 168 reps in one run. A hundred and
+     sixty-eight burpees and squats is not a session. A HIIT protocol is 8-12 work intervals, so
+     the session ENDS after its rounds rather than running until the ladder does.
+
+     Levels change the round count and the work:rest ratio. They deliberately do NOT change the
+     drama — no level makes the belt surge or stutter, because a workout you do every day should
+     not be startling. That belongs to endless mode alone. */
+  hiit: {
+    levels: {
+      /* rest is generous at easy (1:2.5) and even at hard (1:1) — the ratios physiotherapists
+         and coaches actually use, rather than ratios chosen to look impressive */
+      /* `tierCap` is belt SPEED, and it is deliberately high. The recovery segment between walls
+         is 20-30s of running with no rep to perform — that is where the dodging, the lane changes
+         and the coin chains live, and it should be genuinely fast. Capping it low made the whole
+         session sedate, which is the opposite of engaging.
+         The spawner self-corrects for it: a faster belt leaves less time before a wall arrives, so
+         it asks for fewer reps per wall. Speed costs volume rather than costing fairness. */
+      easy:   { rounds: 8,  workSec: 12, restSec: 30, tierCap: 3 },
+      medium: { rounds: 10, workSec: 16, restSec: 24, tierCap: 5 },
+      hard:   { rounds: 12, workSec: 20, restSec: 20, tierCap: 7 },
+    },
+    /* Seconds one honest rep of each kind takes, indexed by MOVE. A burpee costs about three
+       squats, so "4 reps" would mean three completely different workouts depending on which
+       exercise the wall happened to draw. Reps are derived from the interval instead, which is
+       what keeps every round the same amount of work. */
+    repSec: [2.2, 2.4, 1.2, 3.5],     // squat, push-up, jumping jack, burpee
+    repRange: [3, 16],                // whatever the arithmetic says, ask for a sane number
+    /* The dive headroom the spawner reserves in endless mode. Calm mode does not lean on diving
+       to close a gap, and reserving 1.8 u/s of it caps a wall at ~4 reps on a 34-unit runway —
+       which is the arithmetic that made short walls the only possibility. */
+    closeMargin: 0.3,
+    warmupSec: 18,       // belt at tier 0, no walls, before round 1
+    cooldownSec: 12,     // after the last wall clears, before the clock-out card
   },
 
   /* ---- performance ----------------------------------------------------------------- */
@@ -629,6 +682,11 @@ function spring(state, key, vkey, target, omega, dt){
 let _seed = 0x2f6e2b1;
 function rnd(){ _seed ^= _seed<<13; _seed ^= _seed>>>17; _seed ^= _seed<<5; _seed|=0; return ((_seed>>>0)%100000)/100000; }
 const rndR = (a,b)=> a + (b-a)*rnd();
+/* m:ss — the only place the game shows a duration, so it lives here rather than inline */
+const fmtMinSec = (s)=>{
+  const t = Math.max(0, Math.round(s));
+  return Math.floor(t/60) + ':' + String(t%60).padStart(2,'0');
+};
 const rndI = (a,b)=> a + Math.floor(rnd()*(b-a+1));
 const pick = (arr)=> arr[Math.floor(rnd()*arr.length)];
 
@@ -2656,6 +2714,142 @@ function lerpPose(a,b,t){
    frame plus one brick per required rep, and a rep shatters a brick.
    ===================================================================================== */
 const RN = TUNING.run;
+/* =====================================================================================
+   17b. THE SESSION — what the belt is counting toward.
+
+   This is the only thing that separates a mode from a mode. Endless counts toward nothing and
+   ends when you fail; a workout counts toward a fixed number of rounds and ends when you finish.
+   Everything else — walls, coins, the belt, the detector — is shared machinery underneath.
+
+   Finishing rather than failing is the whole point. Every session in endless mode ends with the
+   player being knocked down, which is correct for a score chase and useless for something you are
+   meant to do daily: it means you never once close the app having succeeded.
+   ===================================================================================== */
+const HI = TUNING.hiit;
+
+const Session = {
+  hiit:false,                 /* false = endless: no rounds, no cap, all the drama */
+  level:'medium',
+  round:0,                    /* 0 during warm-up, then 1..rounds */
+  phase:'work',               /* 'warmup' | 'work' | 'rest' | 'cooldown' | 'done' */
+  phaseT:0, t:0,
+  reps:0, workT:0, restT:0,   /* totals, for the clock-out card */
+
+  /* HOW LONG THIS PLAYER'S REPS ACTUALLY TAKE, per exercise, learned as they go.
+     `HI.repSec` is a population average and the spawner uses it to decide how many reps a wall can
+     ask for before it arrives. Measured: a body at 3.6s per rep — slower than average, which is
+     most people at the end of a set — got knocked down by 8 of 10 walls, because every wall was
+     sized for someone faster. Punishing a slower body is the exact failure the whole
+     effort-buys-time design exists to avoid, so the estimate follows the person instead. */
+  obsSec: HI.repSec.slice(),
+  lastRepT:-99, lastRepKind:-1,
+
+  save(){ try { localStorage.setItem('br.pace', JSON.stringify(this.obsSec)); } catch(e){} },
+  load(){
+    try {
+      const v = JSON.parse(localStorage.getItem('br.pace') || 'null');
+      if (Array.isArray(v) && v.length === HI.repSec.length &&
+          v.every(x => typeof x === 'number' && x > 0.3 && x < 12)) this.obsSec = v;
+    } catch(e){}
+  },
+
+  /* one rep landed. Time between consecutive reps of the SAME kind is the honest measure — the
+     first rep of a wall is preceded by a whole rest interval, which the window rejects. */
+  noteRep(kind){
+    const dt = this.t - this.lastRepT;
+    const same = kind === this.lastRepKind;
+    this.lastRepT = this.t; this.lastRepKind = kind;
+    if (!same || !(dt > 0.5 && dt < 12)) return;
+    this.obsSec[kind] = lerp(this.obsSec[kind], dt, 0.35);
+  },
+  secFor(kind){ return this.obsSec[kind] || HI.repSec[kind] || 2.2; },
+
+  cfg(){ return HI.levels[this.level] || HI.levels.medium; },
+  get rounds(){ return this.hiit ? this.cfg().rounds : 0; },
+
+  start(hiit, level){
+    this.hiit = !!hiit;
+    if (level && HI.levels[level]) this.level = level;
+    this.round = 0; this.phase = this.hiit ? 'warmup' : 'work'; this.phaseT = 0;
+    this.reps = 0; this.workT = 0; this.restT = 0;
+    this.t = 0; this.lastRepT = -99; this.lastRepKind = -1;
+    this.load();
+  },
+
+  /* endless mode never caps, never calms; the workout does both */
+  tierCap(){ return this.hiit ? this.cfg().tierCap : 99; },
+  calm(){ return this.hiit; },
+
+  /* How many reps this wall should ask for. Derived from the work interval and the cost of the
+     exercise drawn, then bounded by `afford` — how many the runway can actually guarantee before
+     the wall arrives. If the runway is the binding constraint the round is a little shorter than
+     nominal, which is the honest outcome; the alternative is promising an interval the geometry
+     cannot deliver. */
+  repsFor(kind, afford){
+    const sec = this.secFor(kind);
+    const want = this.hiit ? Math.round(this.cfg().workSec / sec)
+                           : clamp(RN.wallReps[0] + Math.floor(Belt.tier*0.45),
+                                   RN.wallReps[0], RN.wallReps[1]);
+    const lo = this.hiit ? HI.repRange[0] : RN.wallReps[0];
+    const hi = this.hiit ? HI.repRange[1] : RN.wallReps[1];
+    return clamp(Math.min(want, afford), lo, Math.max(lo, hi));
+  },
+  /* seconds of movement `need` reps of `kind` genuinely costs, which is what the spawner has to
+     leave room for. Uses the per-exercise cost, not one number for all four. */
+  repCost(kind, need){
+    const sec = this.hiit ? this.secFor(kind) : RN.repDurBody;
+    return need*(sec + RN.repGap)*RN.repSlack + RN.wallLead;
+  },
+  margin(){ return this.hiit ? HI.closeMargin : RN.closeMargin; },
+
+  /* belt units of recovery before the next wall is due */
+  restDist(){
+    if (!this.hiit) return rndR(RN.wallEvery[0], RN.wallEvery[1]);
+    return this.cfg().restSec * Math.max(1, Belt.tierSpeed(Belt.tier));
+  },
+
+  /* Is another wall allowed? In a workout the answer becomes no once the rounds are used up,
+     which is what makes the session finite. */
+  wantsWall(){
+    if (!this.hiit) return true;
+    return this.phase !== 'cooldown' && this.phase !== 'done' && this.round < this.rounds;
+  },
+
+  wallSpawned(){ if (this.hiit){ this.round++; this.phase = 'work'; this.phaseT = 0; } },
+  /* A wall resolved — shattered, hopped or hit. Either way the round is spent, and the recovery
+     clock starts HERE rather than at the spawn. That distinction is the difference between a real
+     rest interval and a nominal one: scheduling the next wall from the previous wall's spawn means
+     the gap silently includes the whole work interval, so a configured 30s rest was measured at
+     24s and shrank further the longer the work took. */
+  wallResolved(){
+    if (!this.hiit) return;
+    this.phase = this.round >= this.rounds ? 'cooldown' : 'rest';
+    this.phaseT = 0;
+    Run.wallNext = this.restDist();
+  },
+
+  step(dt){
+    this.phaseT += dt; this.t += dt;
+    if (!this.hiit) return;
+    if (this.phase === 'work') this.workT += dt; else this.restT += dt;
+    if (this.phase === 'warmup' && this.phaseT >= HI.warmupSec){ this.phase = 'rest'; this.phaseT = 0; }
+    if (this.phase === 'cooldown' && this.phaseT >= HI.cooldownSec && !Walls.busy()){
+      this.phase = 'done';
+      this.save();
+      Game.finish();
+    }
+  },
+
+  label(){
+    if (!this.hiit) return '';
+    if (this.phase === 'warmup')   return 'WARM UP';
+    if (this.phase === 'cooldown') return 'COOL DOWN';
+    if (this.phase === 'done')     return 'DONE';
+    return 'ROUND ' + Math.max(1, this.round) + '/' + this.rounds
+         + (this.phase === 'rest' ? '  ·  RECOVER' : '');
+  },
+};
+
 const Run = {
   lanes:true, coins:0, chain:0, chainT:0,
   wallsCleared:0, wallsHit:0, wallsHopped:0, wallNext:0, coinNext:0,
@@ -2681,12 +2875,19 @@ const Run = {
     Coins.step(dt);
     Walls.step(dt);
     if (Game.state !== 'play' || !this.lanes) return;
+    Session.step(dt);
     const travel = Belt.speed*dt;
     this.coinNext -= travel;
     if (this.coinNext <= 0 && !Walls.blockingSpawn()){ Coins.spawnRun(); this.coinNext = rndR(RN.coinEvery[0], RN.coinEvery[1]); }
+    /* the warm-up is belt-only on purpose: a body needs a minute of movement before the first
+       hard interval, and it is also where the framing and tracking settle */
+    if (Session.phase === 'warmup') return;
     this.wallNext -= travel;
     if (this.wallNext <= 0){
-      if (Walls.trySpawn()) this.wallNext = rndR(RN.wallEvery[0], RN.wallEvery[1]);
+      /* In a workout the next wall is scheduled by `Session.wallResolved`, once this one is
+         actually done with — so park the counter rather than restarting it here. Endless keeps
+         spawning on a rolling distance, which is what makes it relentless. */
+      if (Walls.trySpawn()) this.wallNext = Session.hiit ? 1e9 : Session.restDist();
       else this.wallNext = 4;                  // retry soon; obstacles stay suppressed meanwhile
     }
   },
@@ -2883,32 +3084,42 @@ const Walls = {
     w.chip = f; this.layout(w);
   },
   trySpawn(){
+    if (!Session.wantsWall()) return false;         // the workout has used up its rounds
     const sz = spawnZBase();
-    const need = clamp(RN.wallReps[0] + Math.floor(Belt.tier*0.45), RN.wallReps[0], RN.wallReps[1]);
     /* the wall has to arrive late enough that the reps are physically possible.
        The gap closes at (belt speed - the player's net world velocity), which in lane mode
        is just the belt, because station-keeping cancels the run. The old free-mode estimate
        added the player's forward speed and was 60% too pessimistic here, which quietly
        refused almost every wall. A dive is the one way to close faster, hence the margin. */
-    const closing = Math.max(0.5, Belt.workSpeed(Belt.tier) - (P.vz + beltDragNow()) + RN.closeMargin);
+    const closing = Math.max(0.5, Belt.workSpeed(Belt.tier) - (P.vz + beltDragNow()) + Session.margin());
     const lead = (P.z - sz)/closing;
-    /* the honest cost of the reps: each one takes repDur of actual movement plus the gap
-       before the next can start. Counting only the gap was fine when a keypress committed a
+    /* The exercise is drawn FIRST, because how many reps to ask for depends on which one it is —
+       a burpee costs about three squats, so an interval of equal work is a different rep count per
+       kind. `afford` is how many the runway can guarantee; the wall asks for the smaller of what
+       the interval wants and what the geometry allows. */
+    const kind = rndI(0,3);
+    const perRep = (Session.hiit ? Session.secFor(kind) : RN.repDurBody) + RN.repGap;
+    const afford = Math.floor((lead - RN.wallLead)/Math.max(0.1, perRep*RN.repSlack));
+    const need = Session.repsFor(kind, afford);
+    /* the honest cost of the reps: each one takes a rep's duration of actual movement plus the
+       gap before the next can start. Counting only the gap was fine when a keypress committed a
        course instantly; a body has to move through the whole rep. This is what pushes the
-       telegraph out to the 3-4s a person needs. */
-    const needTime = need*(RN.repDurBody + RN.repGap)*RN.repSlack + RN.wallLead;
+       telegraph out to the seconds a person needs. */
+    const needTime = Session.repCost(kind, need);
     if (lead < Math.max(LIVE.legibility, needTime)) { Spawn.blocked++; return false; }
     /* let the corridor drain first — obstacles stop spawning once a wall is due */
     for (let i=0;i<obsActive.length;i++) if (obsActive[i].z < P.z + 2) return false;
     const w = this.get();
-    w.alive = true; w.z = sz; w.kind = rndI(0,3); w.need = need; w.done = 0; w.chip = 0;
-    w.passed = false; w.hitDone = false; w.lead = lead;
+    w.alive = true; w.z = sz; w.kind = kind; w.need = need; w.done = 0; w.chip = 0;
+    w.passed = false; w.hitDone = false; w.counted = false; w.lead = lead;
     w.sign.material.map = TEX.sign[w.kind];       // each pooled wall owns its material
     w.bricks.material.color.set(EX_COLOR[w.kind]);
     w.root.visible = true;
     this.layout(w);
     this.active.push(w);
-    Sfx.klaxon();
+    Session.wallSpawned();
+    /* the klaxon is a threat cue. A workout announces the next exercise; it does not alarm you. */
+    if (!Session.calm()) Sfx.klaxon(); else Sfx.chime(1);
     return true;
   },
   /* a completed rep: commit the course the in-flight damage had been working on */
@@ -2961,6 +3172,10 @@ const Walls = {
           UI.pop(P.x, w.z, 'HOPPED  +25'); Sfx.chime(2);
         }
       }
+      /* The round is spent however the wall ended — shattered, hopped, or it knocked you down.
+         Counting only clean clears would mean a session you are failing never finishes, which is
+         the opposite of what a bounded workout is for. */
+      if (!w.counted && (w.passed || w.hitDone)){ w.counted = true; Session.wallResolved(); }
       if (w.z > B.rear + 4){
         w.alive=false; w.root.visible=false; w.chip=0;
         if (this.chipOwner === w) this.chipOwner = null;   // never leave a recycled wall owned
@@ -3030,6 +3245,7 @@ const Signal = {
     /* proof of real work: the belt's easing budget is refunded in full, so a player who is
        actually completing reps has an unlimited allowance of slowed-down time */
     Belt.effortT = 0;
+    Session.noteRep(kind);        /* learn how long this player's reps actually take */
     Run.repDone(kind);
     return true;
   },
@@ -3390,9 +3606,12 @@ const Belt = {
   get warning(){ return this.surgeState===1 || this.stutState===1; },
   get disturbed(){ return this.surgeState!==0; },
   step(dt){
-    /* tier ladder — long plateaus, then a hard step up */
+    /* tier ladder — long plateaus, then a hard step up. A workout caps it per level: the ladder
+       exists to escalate an arcade run toward failure, and a session you do every day should not
+       escalate toward failure at all. */
     let t = 0;
     for (let i=0;i<B.tierAt.length;i++) if (this.dist >= B.tierAt[i]) t = i;
+    t = Math.min(t, Session.tierCap());
     if (t !== this.tier){ this.tier = t; UI.tierUp(t); }
     /* a rep in flight eases the belt; pausing lets it pick back up */
     const wantWork = !!(Run.lanes && Signal.progT < RN.workGap && Walls.chipOwner);
@@ -3406,9 +3625,15 @@ const Belt = {
     const rate = Math.abs(want - this.base)/B.stepTime;
     this.base = moveTo(this.base, want, Math.max(rate, 1.2)*dt);
 
-    /* surges: telegraphed, then a hard shove */
+    /* Surges and stutters: telegraphed, then a hard shove. Endless only.
+       These are what make the arcade run feel dangerous, and they are exactly what a daily workout
+       must not do — nobody wants the floor to lurch while they are at the bottom of a push-up. A
+       calm session skips the scheduling entirely rather than damping the effect, so no surge can
+       be halfway through when a level starts. */
+    const calm = Session.calm();
     const S = B.surge;
-    if (this.surgeState===0){
+    if (calm){ this.surgeState=0; this.surgeT=0; this.stutState=0; this.stutT=0; }
+    else if (this.surgeState===0){
       this.surgeNext -= dt;
       if (this.surgeNext <= 0 && this.dist > 140){ this.surgeState=1; this.surgeT=0; UI.surge(true); Sfx.klaxon(); }
     } else {
@@ -3422,7 +3647,8 @@ const Belt = {
     }
     /* stutters: the belt hiccups and an over-committed runner meets the front roller */
     const T = B.stutter;
-    if (this.stutState===0){
+    if (calm){ /* handled above */ }
+    else if (this.stutState===0){
       this.stutNext -= dt;
       if (this.stutNext <= 0 && this.dist > 320 && this.surgeState===0){ this.stutState=1; this.stutT=0; Sfx.stutterWarn(); }
     } else {
@@ -3487,7 +3713,13 @@ function trySpawn(dt){
   Spawn.gapLeft -= Belt.speed*dt;
   if (Spawn.gapLeft > 0) return;
   if (Belt.disturbed){ Spawn.gapLeft = 2.0; return; }        // never spawn into a surge
-  const obsCap = Run.lanes ? RN.maxObs : (inputMode==='touch' ? 8 : TUNING.obs.maxActive);
+  /* The recovery segment is 20-30s of empty belt, and it is the whole cardio half of the workout —
+     so it gets more traffic than the old cap allowed. `maxObs` was lowered to 6 back when walls
+     arrived every 15s and the two competed for the corridor; with real recovery gaps there is room
+     for proper obstacle patterns, and dodging them is what makes the running part a game. */
+  const resting = Run.lanes && Session.hiit && Session.phase !== 'work';
+  const obsCap = Run.lanes ? (resting ? RN.maxObsRest : RN.maxObs)
+                           : (inputMode==='touch' ? 8 : TUNING.obs.maxActive);
   if (obsActive.length >= obsCap){ Spawn.gapLeft = 3.0; return; }
 
   /* the legibility guarantee: measured against the worst-case closing speed */
@@ -4060,6 +4292,9 @@ const Score = {
    ===================================================================================== */
 const $ = (id)=> document.getElementById(id);
 const Settings = { auto:false, sound:true, shake:true, lanes:true, camera:false,
+  /* hiit false is the endless arcade run; true is the bounded workout. `level` sets the work:rest
+     ratio and the round count — it is not a difficulty slider on the game, only on the workout. */
+  hiit:true, level:'medium',
   quality: (inputMode==='touch') ? 3 : 2 };
 
 const TWEEN = [];
@@ -4111,7 +4346,7 @@ const UI = {
     this.moveBar=$('moveBar'); this.coinBox=$('coinBox'); this.coinEl=$('coins');
     this.cue=$('wallCue'); this.wallEx=$('wallEx'); this.wallReps=$('wallReps');
     this.arc=$('wallArc'); this.arcCtx=this.arc.getContext('2d');
-    this.trackChip=$('trackChip'); this.rejectMsg=$('rejectMsg');
+    this.trackChip=$('trackChip'); this.rejectMsg=$('rejectMsg'); this.roundChip=$('roundChip');
     this._cueOn=false; this._cueKind=-1; this._cueLeft=-1; this._coins=-1;
     this._arcW=-1; this._track=''; this._rejectT=0;
     const wrap=$('popWrap');
@@ -4238,6 +4473,7 @@ const UI = {
     tween(el, 1, 0.95, 1, sx-26, sy);
   },
   update(dt){
+    this.round();
     /* score counts up, never snaps */
     const tot = Score.total();
     Score.shown = damp(Score.shown, tot, 8.5, dt);
@@ -4287,6 +4523,19 @@ const UI = {
       $('calSub').innerHTML = sub || '&nbsp;'; }
     const p = Math.round(clamp01(prog||0)*100);
     if (this._calProg !== p){ this._calProg = p; $('calBar').style.width = p + '%'; }
+  },
+  /* which interval you are in. Only changes on a real transition, so the text never strobes. */
+  round(){
+    const c = this.roundChip;
+    if (!c) return;
+    const on = Session.hiit && Game.state === 'play';
+    const txt = on ? Session.label() : '';
+    if (this._roundTxt !== txt){
+      this._roundTxt = txt;
+      c.classList.toggle('on', on);
+      c.classList.toggle('rest', Session.phase === 'rest' || Session.phase === 'warmup');
+      if (on) c.textContent = txt;
+    }
   },
   /* the tracking state, as a colour you can read at three metres */
   tracking(s){
@@ -4363,10 +4612,22 @@ const UI = {
     for (const c of $('segEx').children) c.dataset.on = (+c.dataset.v===k)?'1':'0';
     this._reps = -1; this.gymReps.textContent = '0';
   },
-  showDead(){
-    this.deadScore.textContent = String(Math.floor(Score.total()));
-    const isBest = Score.total() >= Score.best - 0.5;
-    this.deadSub.innerHTML = isBest ? 'NEW BEST' : 'BEST ' + Math.floor(Score.best);
+  /* `finished` true means the session was completed rather than lost. The headline number changes
+     with it: a score is what you salvaged from an arcade run, but what you want to see after a
+     workout is the work — reps done and minutes moving. */
+  showDead(finished){
+    const L = $('deadLbl');
+    if (finished){
+      L.textContent = 'Shift Complete';
+      this.deadScore.textContent = String(Signal.count);
+      this.deadSub.innerHTML = 'REPS  ·  ' + fmtMinSec(Session.workT + Session.restT)
+                             + '  ·  ' + Session.level.toUpperCase();
+    } else {
+      L.textContent = 'Run Over';
+      this.deadScore.textContent = String(Math.floor(Score.total()));
+      const isBest = Score.total() >= Score.best - 0.5;
+      this.deadSub.innerHTML = isBest ? 'NEW BEST' : 'BEST ' + Math.floor(Score.best);
+    }
     this.showCard(this.cardDead, true);
   },
 };
@@ -4772,6 +5033,8 @@ const Game = {
     if (this.state !== 'title') return;
     this.state = 'play'; this.startedAt = performance.now();
     In.demo = false;
+    /* the workout only exists in lane mode; free-run is always the endless arcade */
+    Session.start(Run.lanes && Settings.hiit, Settings.level);
     this.resetWorld();
     Belt.scoring = true;
     UI.showCard(UI.cardStart, false);
@@ -4797,6 +5060,19 @@ const Game = {
     Score.best = Math.max(Score.best, Score.total());
     UI.showDead();
     Fx.flash(0.3);
+  },
+  /* Clocking out — the opposite of `over`. A workout ends because you completed it, and that has
+     to be a different screen with a different sound, or the game is telling you that finishing and
+     failing are the same event. This is the single most important difference between the arcade
+     mode and something you would open tomorrow. */
+  finish(){
+    if (this.state !== 'play') return;
+    this.state = 'dead';
+    UI.moves(false);
+    Score.best = Math.max(Score.best, Score.total());
+    UI.showDead(true);
+    Sfx.wallDown();
+    burstConfetti(0, 1.8, P.z - 3, 40);
   },
   /* two independent reasons to stop the world: the menu, and losing sight of the player.
      Neither may clear the other's hold. */
@@ -5015,7 +5291,7 @@ window.BR = { TUNING, LIVE, P, Belt, Game, In, Score, Quality, DBG, Post, PLAY, 
   obsActive, obsPool, FX, Cam, Fx, ST, OT, OBS_DEF, applyInputMode, resize, camera, renderer, scene, rig, THREE,
   simulate, updatePlayArea, stepPlayer, doJump, startDive, startRagdoll, spawnPattern, spawnZBase, getObstacle,
   curPose, prevPose, FIXED, Ex, exPose, EX_NAMES, EX_SHORT, UI, TEX, world,
-  Run, Coins, Walls, Moves, MOVE, Signal, RepDrive, TRACK, IS_LUNGE, beltDragNow, Cam3,
+  Run, Coins, Walls, Moves, MOVE, Signal, RepDrive, TRACK, IS_LUNGE, beltDragNow, Cam3, Session,
   haltRender(v){ renderHalted = !!v; lastT = 0; acc = 0; },
   applyPoseNow(){ applyPose(renderPose, 1/60); },
   /* headless-test driver: advance the fixed-step simulation without waiting on rAF */
