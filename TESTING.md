@@ -1,5 +1,9 @@
 # Testing the camera control
 
+**Camera control is in the game now.** Turn it on in Settings and it walks you through
+calibration before the run — framing check, a still A-pose, then one rep of each exercise. Those
+become *your* thresholds. The keyboard keeps working the whole time; the toggle is live.
+
 The fastest useful test does **not** need Xcode, Android Studio, or a phone. Start on your
 laptop, because the question that matters first — *does the detection register a real body?* —
 is answerable in about two minutes there, and a laptop's `localhost` is a secure context so the
@@ -17,13 +21,22 @@ Pulls the MediaPipe runtime and the pose model into `pose/vendor/` — about 18 
 fetched at build time and served from your own origin at run time, never from a CDN while the
 app is running. They are not committed to the repo.
 
-## 2. Serve it and open the diagnostic page
+## 2. Serve it and open the game
 
 ```bash
 python3 -m http.server 8000
 ```
 
-Then open **http://localhost:8000/posecheck.html** and press **Start camera**.
+Open **http://localhost:8000/index.html**, hit the gear, and turn on **Camera control**.
+
+First launch moves ~18MB off disk, so the card sits on `WARMING UP` for a few seconds. Then it
+runs calibration. Press `F3` (or triple-tap the top-left) for the debug overlay — it now carries
+the pose pipeline too: which inference mode came up, inference time, machine state, every angle,
+and your fitted thresholds.
+
+There is also **http://localhost:8000/posecheck.html** — the same detection layer with no game
+attached. It is a dev tool for tuning thresholds, not something you need. Use it if a specific
+exercise misbehaves and you want it isolated from everything else.
 
 `http://localhost` counts as a secure context, which is what `getUserMedia` requires. `file://`
 does not, and neither does reaching your laptop from your phone by IP over plain http — see
@@ -31,10 +44,8 @@ step 4 for that.
 
 ## 3. What to look at
 
-This page is the detection layer with no game attached, on purpose: if a squat does not
-register, wiring it into the game teaches you nothing.
-
-**First, the top-left `Pipeline` card.** It reports which inference mode actually came up:
+**First, which inference mode came up** — the debug overlay's `pose` line, or the tag under the
+camera preview in the corner:
 
 | | |
 |---|---|
@@ -46,19 +57,17 @@ Which of these you get is the single biggest unknown in the whole project, and i
 card says it out loud rather than degrading quietly. **Please tell me what it says on your
 phone** — the fallback ladder exists precisely because I could not find out from here.
 
-**Then stand up and move.** Pick an exercise from the bar and do a few reps. Watch:
+**Then do the calibration it asks for.** Framing with your arms overhead, hold still, then one
+rep of each exercise. Any single exercise can be skipped without trapping you. Watch the `cal`
+line in the debug overlay fill in — those numbers replacing my defaults is calibration working.
 
-- the **big number** top-right — accepted reps
-- the **skeleton** — green is confident, amber is shaky, red is a guess
-- the **`Body` card** — every angle and ratio the machines reason about, live
-- the **`Machine` card** — which state the machine is in, and the phase 0→0.5→1
-- the **middle of the screen** — when a rep is refused it says *why*: `GO LOWER`,
-  `HOLD IT AT THE BOTTOM`, `KEEP YOUR CHEST UP`, `TOO FAST`
+**Then play.** A wall arrives asking for an exercise; do it and the wall crumbles *as you move*,
+because the penguin is posed from your measured phase rather than playing an animation. Lunge
+sideways to change lane. When a rep is refused the screen says why — `GO LOWER`,
+`HOLD IT AT THE BOTTOM`, `KEEP YOUR CHEST UP`, `TOO FAST`.
 
-**Then press Calibrate** and follow the prompt at the bottom. It runs the real onboarding:
-framing check with your arms up, a still A-pose, then one rep of each exercise. Watch the
-`Calibration` card fill in — those are *your* thresholds replacing my defaults. Comparing
-`squat knee` before and after is the clearest signal that calibration is doing its job.
+The corner preview shows the skeleton: green is confident, amber is shaky, red is a guess. If
+tracking is lost the whole world freezes rather than failing you.
 
 ## 4. Then on the phone, on the floor
 

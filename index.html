@@ -140,6 +140,22 @@
     backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
     transition:transform .16s cubic-bezier(.3,1.7,.5,1), opacity .14s ease;z-index:6}
   #wallCue.on{opacity:1;transform:translate(-50%,0) scale(1)}
+  /* ---- camera onboarding + preview ---- */
+  #cardCal{max-width:min(86vw,540px)}
+  #calBig{font-size:min(5.4vw,26px);line-height:1.25;letter-spacing:.02em;margin:4px 0 6px}
+  #calBarWrap{height:8px;border-radius:5px;background:rgba(255,255,255,.14);overflow:hidden;
+    margin:10px 0 14px}
+  #calBar{height:100%;width:0%;background:var(--mint);border-radius:5px;transition:width .12s linear}
+  .btn.ghost{background:transparent;border:2px solid var(--edge);color:#cfe0f5;
+    box-shadow:none;font-size:13px;padding:9px 14px;margin-top:6px}
+  #pip{position:absolute;right:calc(10px + var(--sar));bottom:calc(10px + var(--sab));
+    width:min(30vw,180px);border-radius:14px;overflow:hidden;display:none;z-index:6;
+    border:2px solid rgba(255,255,255,.18);background:#0a0f18}
+  #pip.on{display:block}
+  #pipCam{display:block;width:100%;transform:scaleX(-1)}
+  #pipOv{position:absolute;inset:0;width:100%;height:100%}
+  #pipTag{position:absolute;left:0;right:0;bottom:0;padding:3px 6px;font-size:10px;
+    letter-spacing:.10em;text-align:center;background:rgba(8,12,20,.72);color:#9fb4d0}
   #wallEx{font-size:19px;letter-spacing:.06em}
   /* the phone ends up on the floor a couple of metres away, so anything that must be read
      while standing is oversized on purpose. Detail goes to the audio cues, not to here. */
@@ -282,6 +298,18 @@
       <button class="btn" id="btnPlay">START</button>
     </div>
 
+    <!-- camera onboarding: framing, then an A-pose, then one rep of each exercise. This is the
+         pre-run step, not a separate page: thresholds set from your own body are what make the
+         detection work at all, so it belongs in front of the run. -->
+    <div id="cardCal" class="card panel">
+      <div class="lbl" id="calStage">CAMERA</div>
+      <div id="calBig" class="num">STAND WHERE YOUR WHOLE BODY FITS</div>
+      <div class="sub" id="calSub">&nbsp;</div>
+      <div id="calBarWrap"><div id="calBar"></div></div>
+      <button class="btn" id="btnCalSkip">SKIP THIS ONE</button>
+      <button class="btn ghost" id="btnCalCancel">USE THE KEYBOARD INSTEAD</button>
+    </div>
+
     <div id="cardDead" class="card panel">
       <div class="lbl">Run Over</div>
       <div id="deadScore" class="num big">0</div>
@@ -290,9 +318,18 @@
     </div>
   </div>
 
+  <!-- the camera preview, small and out of the way. Mirrored, because people expect a mirror;
+       the landmark data behind it is never mirrored. -->
+  <div id="pip">
+    <video id="pipCam" playsinline muted></video>
+    <canvas id="pipOv"></canvas>
+    <div id="pipTag">—</div>
+  </div>
+
   <div id="settings">
     <div id="setCard" class="panel">
       <div class="lbl" style="margin-bottom:6px">Settings</div>
+      <div class="row"><span>Camera control</span><div class="toggle" id="tgCam" data-on="0"></div></div>
       <div class="row"><span>3-lane fitness run</span><div class="toggle" id="tgLanes" data-on="1"></div></div>
       <div class="row"><span>Auto-run</span><div class="toggle" id="tgAuto" data-on="0"></div></div>
       <div class="row"><span>Sound</span><div class="toggle" id="tgSound" data-on="1"></div></div>
@@ -3016,6 +3053,209 @@ const Moves = {
 };
 
 /* =====================================================================================
+   16c. CAMERA CONTROL — the pose layer, attached to the input contract.
+
+   Everything here is LAZY. `pose/` is a set of ES modules that only exist over http, and
+   index.html has to keep working when opened straight off disk and inside the artifact
+   sandbox, where there is no camera at all. So nothing is imported until the player actually
+   turns the camera on, and a failure to load leaves the keyboard game completely untouched.
+
+   Calibration is the pre-run step rather than a separate diagnostic page: thresholds fitted to
+   your own body are what make the detection work, so they belong in front of the run. The
+   sequence is the one from the vision brief — framing check in the tallest pose, a still
+   A-pose, then one rep of each exercise — and any single exercise can be skipped without
+   trapping you in onboarding.
+   ===================================================================================== */
+const Cam3 = {
+  on:false, loading:false, ready:false, mod:null,
+  Det:null, Cal:null, Src:null, EXm:null,
+  det:null, cal:null, src:null,
+  stage:'', guidance:'', repsAsked:0,
+  mode:'', delegate:'', inferMs:0, lastErr:'',
+  pip:null, pipCam:null, pipOv:null,
+
+  /* persistence: guarded, because the artifact sandbox has no storage and the wrapped app
+     should eventually use @capacitor/preferences instead. A failure here is not an error. */
+  save(){ try { localStorage.setItem('br.cal', JSON.stringify(this.det.cal)); } catch(e){} },
+  load(){ try { const v = localStorage.getItem('br.cal');
+                return v ? JSON.parse(v) : null; } catch(e){ return null; } },
+
+  async enable(){
+    if (this.loading || this.ready) return true;
+    this.loading = true; this.lastErr = '';
+    UI.calShow(true, 'CAMERA', 'STARTING THE CAMERA', 'loading the model, about 18MB');
+    try {
+      const [Det, Cal, Src, cfg] = await Promise.all([
+        import('./pose/detector.js'), import('./pose/calibrate.js'),
+        import('./pose/source.js'),   import('./pose/config.js'),
+      ]);
+      this.Det = Det; this.Cal = Cal; this.Src = Src; this.EXm = cfg.EX;
+      this.det = Det.create(); this.cal = Cal.create(); this.src = Src.create();
+
+      this.pip = $('pip'); this.pipCam = $('pipCam'); this.pipOv = $('pipOv');
+      await Src.openCamera(this.src, {});
+      this.pipCam.srcObject = this.src.stream;
+      await this.pipCam.play().catch(()=>{});
+      const r = await Src.startWorker(this.src, { base:'./pose', model:'lite', delegate:'GPU' });
+      this.mode = r.mode; this.delegate = r.delegate;
+
+      this.src.onResult = (res, t)=> this.onResult(res, t);
+      /* a first launch moves ~18MB off disk and can take a while on a phone; say so rather
+         than showing a frozen card */
+      UI.calShow(true, 'CAMERA', 'WARMING UP', this.mode + ' / ' + this.delegate);
+      this.src.onError = (e)=>{ this.lastErr = e.message || String(e); };
+      Src.start(this.src);
+
+      const saved = this.load();
+      if (saved && saved.ready){ Det.setCalibration(this.det, saved); this.cal.cal = saved; }
+
+      this.on = true; this.ready = true; this.loading = false;
+      this.pip.classList.add('on');
+      $('pipTag').textContent = this.mode + '/' + this.delegate;
+      /* straight into calibration unless we already know this body */
+      if (saved && saved.ready) UI.calShow(false);
+      else this.beginCalibration();
+      return true;
+    } catch (e){
+      this.loading = false; this.lastErr = String(e && e.message || e);
+      UI.calShow(true, 'CAMERA UNAVAILABLE', this.lastErr,
+        'the keyboard still works — this changes nothing else');
+      return false;
+    }
+  },
+
+  disable(){
+    if (this.src && this.Src) this.Src.closeCamera(this.src);
+    this.on = false; this.ready = false;
+    if (this.pip) this.pip.classList.remove('on');
+    UI.calShow(false);
+    Signal.source = 'key';
+    Signal.trackingState(TRACK.GOOD);       // never leave the world frozen behind us
+  },
+
+  beginCalibration(){
+    if (!this.ready) return;
+    this.Cal.begin(this.cal);
+    Game.pause(true);                        // the run waits; nobody calibrates mid-sprint
+    UI.calShow(true, 'CALIBRATING', '', '');
+  },
+
+  /* one inference result: run the detector, then the calibration state machine on top */
+  onResult(res, t){
+    const { Det, Cal, Src } = this;
+    Src.unletterbox(this.src, res);
+    Signal.source = 'pose';
+    this.inferMs = this.src.stats.inferMs;
+
+    /* during calibration the events are consumed by the calibrator, not the game */
+    const calibrating = this.cal.stage !== Cal.STAGE.IDLE && this.cal.stage !== Cal.STAGE.DONE;
+    Det.push(this.det, res, t, calibrating ? this.calSink : Signal);
+
+    if (calibrating){
+      Cal.step(this.cal, this.det.frame, this.det.body, null);
+      if (this.cal.stage === Cal.STAGE.REPS){
+        const k = this.cal.exOrder[this.cal.exIdx];
+        if (k !== undefined){
+          Det.setWant(this.det, (k === this.EXm.LUNGE_L || k === this.EXm.LUNGE_R) ? this.det.want : k);
+          Cal.observe(this.cal, k, this.det.body);
+        }
+      }
+      Det.setCalibration(this.det, this.cal.cal);
+      this.paintCal();
+    } else if (this.cal.stage === Cal.STAGE.DONE && Game.paused && !UI.setPanel.classList.contains('on')){
+      /* calibration just finished: hand control back and let the player start */
+      Game.pause(false);
+      UI.calShow(false);
+      this.save();
+    } else {
+      /* live: the wall in front decides which machine runs */
+      const w = (Game.state === 'play' && Run.lanes) ? Walls.target() : null;
+      if (w) Det.setWant(this.det, w.kind);
+      if (this.det.cal.ready){
+        const drift = Cal.driftGuidance(this.cal, this.det.body);
+        if (drift) UI.reject(drift);
+      }
+    }
+    this.paintPip();
+  },
+
+  /* calibration consumes reps itself, so it gets its own sink rather than the game's */
+  calSink: {
+    laneChange(){},
+    repProgress(){},
+    repCompleted(kind){
+      const C = Cam3;
+      if (C.cal.stage !== C.Cal.STAGE.REPS) return;
+      const done = C.Cal.repDone(C.cal);
+      Sfx.chime(2);
+      if (done){ C.save(); Fx.flash(0.2); }
+    },
+    repRejected(kind, why){ UI.reject(why); },
+    trackingState(s){ Signal.trackingState(s); },
+  },
+
+  skipCurrent(){
+    if (!this.ready || this.cal.stage !== this.Cal.STAGE.REPS) return;
+    if (this.Cal.skipEx(this.cal)) this.save();
+  },
+
+  paintCal(){
+    const C = this.cal, K = this.Cal.STAGE;
+    let title = 'CALIBRATING', big = '', sub = '', prog = 0;
+    if (C.stage === K.FRAME){
+      title = 'FRAMING';
+      big = C.guidance || 'HOLD IT — ARMS UP';
+      sub = 'we check with your arms overhead, because that is the tallest you get';
+      prog = clamp01(C.frameHeldMs/1200);
+    } else if (C.stage === K.APOSE){
+      title = 'MEASURING';
+      big = 'HOLD STILL, ARMS OUT';
+      sub = 'a median over 30 frames, never one';
+      prog = clamp01(C.samples.shoulderW.length/30);
+    } else if (C.stage === K.REPS){
+      const k = C.exOrder[C.exIdx];
+      const nm = (EX_NAMES[k] || 'MOVE');
+      title = 'ONE ' + nm;
+      big = 'DO ONE ' + nm;
+      sub = 'we record YOUR range, then set your threshold inside it';
+      prog = C.exIdx/C.exOrder.length;
+    } else if (C.stage === K.DONE){
+      title = 'READY'; big = 'CALIBRATED'; sub = 'those are your numbers now'; prog = 1;
+    }
+    UI.calShow(true, title, big, sub, prog);
+    $('btnCalSkip').style.display = (C.stage === K.REPS) ? '' : 'none';
+  },
+
+  paintPip(){
+    const ov = this.pipOv, cam = this.pipCam;
+    if (!ov || !this.pip.classList.contains('on')) return;
+    const W = ov.clientWidth|0, H = ov.clientHeight|0;
+    if (!W || !H) return;
+    if (ov.width !== W) ov.width = W;
+    if (ov.height !== H) ov.height = H;
+    const g = ov.getContext('2d');
+    g.clearRect(0,0,W,H);
+    if (!this.det.frame.valid) return;
+    const F = this.det.frame;
+    /* mirrored to match the mirrored preview; the data itself is untouched */
+    const px = (i)=> (1 - F.img[i].x)*W, py = (i)=> (1 - F.img[i].y)*H;
+    g.lineWidth = Math.max(1.4, W*0.012);
+    for (const [a,bb] of PIP_BONES){
+      const v = Math.min(F.img[a].v, F.img[bb].v);
+      g.strokeStyle = v > 0.6 ? 'rgba(110,231,160,.95)'
+                    : v > 0.35 ? 'rgba(255,196,82,.9)' : 'rgba(255,122,122,.7)';
+      g.beginPath(); g.moveTo(px(a),py(a)); g.lineTo(px(bb),py(bb)); g.stroke();
+    }
+    $('pipTag').textContent = this.mode + '/' + this.delegate + '  ' +
+      Math.round(this.inferMs) + 'ms';
+  },
+};
+
+/* the bones the corner preview draws — enough to see at a glance that you are tracked */
+const PIP_BONES = [[11,12],[11,23],[12,24],[23,24],[11,13],[13,15],[12,14],[14,16],
+                   [23,25],[25,27],[24,26],[26,28],[0,11],[0,12]];
+
+/* =====================================================================================
    17. SCREEN FX BUS — streaks, flashes, hazard warning, running dust.
    ===================================================================================== */
 const Fx = {
@@ -3736,7 +3976,7 @@ const Score = {
    24. UI — chunky panels, spring tweens on every value change, score counts up.
    ===================================================================================== */
 const $ = (id)=> document.getElementById(id);
-const Settings = { auto:false, sound:true, shake:true, lanes:true,
+const Settings = { auto:false, sound:true, shake:true, lanes:true, camera:false,
   quality: (inputMode==='touch') ? 3 : 2 };
 
 const TWEEN = [];
@@ -3781,7 +4021,8 @@ const UI = {
   init(){
     this.score=$('score'); this.best=$('best'); this.tierNum=$('tierNum'); this.fill=$('speedFill');
     this.scoreBox=$('scoreBox'); this.tierBox=$('tierBox'); this.surgeEl=$('surge'); this.vig=$('vig');
-    this.cardStart=$('cardStart'); this.cardDead=$('cardDead'); this.deadScore=$('deadScore'); this.deadSub=$('deadSub');
+    this.cardStart=$('cardStart'); this.cardCal=$('cardCal'); this.cardDead=$('cardDead');
+    this._calTitle=this._calBig=this._calSub=''; this._calProg=-1; this.deadScore=$('deadScore'); this.deadSub=$('deadSub');
     this.hint=$('hint'); this.dbg=$('dbg'); this.setPanel=$('settings'); this.setCard=$('setCard');
     this.gymBar=$('gymBar'); this.gymName=$('gymName'); this.gymReps=$('gymReps');
     this.moveBar=$('moveBar'); this.coinBox=$('coinBox'); this.coinEl=$('coins');
@@ -3828,7 +4069,18 @@ const UI = {
         if (fn) fn(Settings[key]);
       });
       el.dataset.on = Settings[key] ? '1':'0';
+      el.dataset.key = key;
     };
+    /* the camera is a toggle like any other, and turning it off restores the keyboard
+       completely — the input contract means nothing else in the game changes */
+    tg($('tgCam'),'camera',async (v)=>{
+      if (v){ const ok = await Cam3.enable(); if (!ok) UI.setToggle($('tgCam'), false); }
+      else Cam3.disable();
+    });
+    $('btnCalSkip').addEventListener('click',(e)=>{ e.stopPropagation(); unfocus(e);
+      Cam3.skipCurrent(); });
+    $('btnCalCancel').addEventListener('click',(e)=>{ e.stopPropagation(); unfocus(e);
+      Cam3.disable(); UI.setToggle($('tgCam'), false); Game.pause(false); });
     tg($('tgLanes'),'lanes',(v)=>{ Run.lanes = v; UI.refreshHints();
       UI.moves(v && Game.state==='play');
       if (!v){ UI.moves(false); this._cueOn=false; this.cue.classList.remove('on'); } });
@@ -3929,6 +4181,25 @@ const UI = {
   moves(on){
     this.moveBar.classList.toggle('on', on && inputMode === 'touch');
     this.coinBox.classList.toggle('on', on);
+  },
+  /* the camera onboarding card. One place decides what it says, so the stages cannot drift. */
+  /* force a toggle back, for when the thing it enables refused to start */
+  setToggle(el, v){
+    if (!el) return;
+    el.dataset.on = v ? '1':'0';
+    if (el.dataset.key) Settings[el.dataset.key] = !!v;
+  },
+  calShow(on, title, big, sub, prog){
+    this.showCard(this.cardCal, !!on);
+    if (!on) return;
+    if (title !== undefined && this._calTitle !== title){ this._calTitle = title;
+      $('calStage').textContent = title; }
+    if (big !== undefined && this._calBig !== big){ this._calBig = big;
+      $('calBig').textContent = big; }
+    if (sub !== undefined && this._calSub !== sub){ this._calSub = sub;
+      $('calSub').innerHTML = sub || '&nbsp;'; }
+    const p = Math.round(clamp01(prog||0)*100);
+    if (this._calProg !== p){ this._calProg = p; $('calBar').style.width = p + '%'; }
   },
   /* the tracking state, as a colour you can read at three metres */
   tracking(s){
@@ -4305,6 +4576,24 @@ let SHADOW_REAL = true;
 /* =====================================================================================
    27. DEBUG OVERLAY — triple-tap the top-left corner (or F3).
    ===================================================================================== */
+/* the camera half of the overlay, so tuning does not need a second page open */
+function camDbg(){
+  const d = Cam3.det, b = d.body, st = Cam3.Det.debugState(d);
+  return '\n' +
+    'pose     ' + Cam3.mode + '/' + Cam3.delegate + '  ' + Math.round(Cam3.inferMs) + 'ms  ' +
+      Cam3.det.track + '\n' +
+    'want     ' + (EX_NAMES[st.want]||'?') + '  ' + st.state + '  ph ' + st.phase.toFixed(2) +
+      '  vis ' + st.vis.toFixed(2) + '\n' +
+    'body     knee ' + b.knee.toFixed(0) + '  elb ' + b.elbow.toFixed(0) +
+      '  tilt ' + b.torsoTilt.toFixed(0) + '  horiz ' + b.torsoHoriz.toFixed(0) + '\n' +
+    'body2    push ' + b.pushDepth.toFixed(2) + '  span ' + b.ankleSpan.toFixed(2) +
+      '  drop ' + b.hipDrop.toFixed(2) + '\n' +
+    'cal      squat ' + d.cal.squatBottomKnee.toFixed(0) + '  jack ' + d.cal.jackOpenSpan.toFixed(2) +
+      '  lunge ' + d.cal.lungeFullSpan.toFixed(2) + '  ' + (d.cal.ready?'ready':'DEFAULTS') + '\n' +
+    'pose ev  ok ' + st.stats.completed + '  no ' + st.stats.rejected +
+      '  lane ' + st.stats.lanes + '  lost ' + st.stats.lost;
+}
+
 const DBG = {
   on:false, fps:60, ft:16.7, sceneCalls:0, tris:0, nan:0, acc:0, n:0, uiT:0, worst:0, steps:0, maxSteps:0,
   toggle(){ this.on = !this.on; UI.dbg.classList.toggle('on', this.on); },
@@ -4333,7 +4622,8 @@ const DBG = {
       'parts    ' + (FX.dust.alive+FX.spark.alive+FX.confetti.alive) + '\n' +
       'input    ' + inputMode + '  play±' + PLAY.half.toFixed(2) + '\n' +
       'state    ' + ['RUN','DIVE','SLIDE','GETUP','RAG','BLEND'][P.state] + '  nan ' + this.nan + '\n' +
-      'steps    ' + this.steps + '/frame  peak ' + this.maxSteps + '  spawn-hold ' + Spawn.blocked;
+      'steps    ' + this.steps + '/frame  peak ' + this.maxSteps + '  spawn-hold ' + Spawn.blocked +
+      (Cam3.ready ? camDbg() : '');
     this.worst = 0;
   },
 };
@@ -4624,7 +4914,7 @@ window.BR = { TUNING, LIVE, P, Belt, Game, In, Score, Quality, DBG, Post, PLAY, 
   obsActive, obsPool, FX, Cam, Fx, ST, OT, OBS_DEF, applyInputMode, resize, camera, renderer, scene, rig, THREE,
   simulate, updatePlayArea, stepPlayer, doJump, startDive, startRagdoll, spawnPattern, spawnZBase, getObstacle,
   curPose, prevPose, FIXED, Ex, exPose, EX_NAMES, EX_SHORT, UI, TEX, world,
-  Run, Coins, Walls, Moves, MOVE, Signal, RepDrive, TRACK, IS_LUNGE, beltDragNow,
+  Run, Coins, Walls, Moves, MOVE, Signal, RepDrive, TRACK, IS_LUNGE, beltDragNow, Cam3,
   haltRender(v){ renderHalted = !!v; lastT = 0; acc = 0; },
   applyPoseNow(){ applyPose(renderPose, 1/60); },
   /* headless-test driver: advance the fixed-step simulation without waiting on rAF */

@@ -89,7 +89,12 @@ export async function startWorker(S, { base='./pose', model='lite', delegate='GP
     /* classic, NOT a module worker — MediaPipe's internal importScripts needs it */
     try { w = new Worker(new URL(`${base}/worker.js`, location.href)); }
     catch (e){ return reject(e); }
-    const to = setTimeout(()=>{ reject(new Error('worker init timed out')); }, 30000);
+    /* Generous on purpose. This is a cold load of an ~18MB model plus a 12MB wasm off disk,
+       which is exactly what a phone's FIRST launch is — and a timeout that fires mid-load does
+       real damage: it abandons a load that was going to succeed and starts a second full one on
+       the main thread, so the user waits twice and ends up in the slower mode. Only an explicit
+       error should count as failure; this is a backstop against a genuine hang, nothing more. */
+    const to = setTimeout(()=>{ reject(new Error('worker init timed out after 120s')); }, 120000);
     w.onmessage = (e)=>{
       const m = e.data;
       if (m.type === 'ready'){ clearTimeout(to); resolve({ w, delegate:m.delegate }); }

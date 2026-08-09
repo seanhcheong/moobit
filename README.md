@@ -21,15 +21,24 @@ The pose layer lives in [`pose/`](pose/) — five exercise state machines, the n
 makes them work for a body other than mine, and the onboarding calibration. It emits the same
 four events the keyboard does, so the game cannot tell them apart.
 
-**It is not yet wired to the game.** To try the detection on your own body right now:
+Turn on **Camera control** in Settings and it runs calibration before the run — framing check,
+A-pose, then one rep of each exercise, fitted to your body. The keyboard keeps working
+throughout; the toggle is live.
 
 ```bash
 ./scripts/fetch-pose-assets.sh      # once: MediaPipe runtime + pose model, ~18MB
 python3 -m http.server 8000
-# open http://localhost:8000/posecheck.html
+# open http://localhost:8000/index.html   (localhost is required — the camera needs a
+#                                          secure context, and file:// is not one)
 ```
 
+The pose modules are **lazy-loaded**, so `index.html` still opens straight off disk and still
+runs in a sandbox with no camera — nothing is imported until you turn the camera on, and a
+failure to load leaves the keyboard game completely untouched.
+
 [`TESTING.md`](TESTING.md) walks through what to look at and how to get it onto a phone.
+[`posecheck.html`](posecheck.html) is the same detection layer with no game attached — a dev tool
+for tuning a misbehaving exercise in isolation, not something you need.
 
 ## Run it
 
