@@ -526,8 +526,13 @@ const TUNING = {
     lungeDur: 0.30,      // s of lunge animation per lane change
     repDur:   0.42,      // s of animation for one in-run rep
     repGap:   0.20,      // s minimum between reps, so it stays a rhythm and not a mash
-    driveSmooth: 17,     // how hard a driven phase is smoothed before it reaches the body
-    driveHold:   0.35,   // s without a progress signal before the driven pose lets go
+    /* Smoothing on the DISPLAYED phase only — the machines upstream always reason on raw
+       numbers. 17 settled in ~175ms, which on top of the vision pipeline's own 150-350ms was
+       enough total lag to read as the penguin following the player rather than moving with them.
+       26 settles in ~115ms, still comfortably longer than the gap between inference frames, so
+       it interpolates rather than stepping. */
+    driveSmooth: 26,     // how hard a driven phase is smoothed before it reaches the body
+    driveHold:   0.30,   // s without a progress signal before the driven pose lets go
     chipDecay:   2.6,    // per s that an abandoned rep's damage heals back onto the wall
     coinValue: 12,
     coinRadius: 0.85,
@@ -551,9 +556,24 @@ const TUNING = {
        makes the mechanic work at any rep speed instead of one particular one — and means a
        slower body is accommodated automatically rather than punished. */
     repDurBody: 2.2,     // s the spawner assumes one real rep takes (keyboard finishes early)
-    workBeltMul: 0.12,   // belt speed while a rep is in flight, as a fraction of tier speed
+    workBeltMul: 0.20,   // belt speed while a rep is in flight, as a fraction of tier speed
     effortUp: 9.0, effortDown: 2.6,   // how fast the easing engages and lets go
     workGap: 0.30,       // s without a progress signal before the belt decides you stopped
+    /* THE EASING IS ON A BUDGET, and this is not a balance dial — it closes a deadlock.
+       "Effort buys time" reads progress signals, and a rep machine emits progress for as long
+       as it believes a rep is underway. A movement that keeps producing progress but never
+       COMPLETES — which is exactly what a too-strict exercise does to an honest player — pinned
+       the belt near zero indefinitely, holding a wall a metre from the player's face while the
+       whole world stopped scrolling. Nothing timed out, because from the belt's point of view
+       the player was working hard the entire time.
+
+       So the gift is metered. Easing spends the budget; a COMPLETED rep refunds it in full, so
+       anyone genuinely doing the work has an unlimited allowance and never notices this exists.
+       Flail for `effortBudget` seconds without finishing a single rep and the belt resumes and
+       the wall arrives — which is the fail condition the design already wanted, rather than a
+       silent stall with no way out. */
+    effortBudget: 5.0,   // s of continuous easing without a completed rep
+    effortRefill: 1.5,   // budget seconds recovered per second of not easing
     coinEvery: [17, 30],
   },
 
@@ -1515,32 +1535,40 @@ const Ex = {
   /* w is the pose weight; gymW is separate and only rises for the *looping* workout, so a
      one-shot rep during a run never drags the camera into workout framing */
   active:false, loop:true, driven:false, kind:0, uAbs:0, uTgt:0, driveT:0,
-  reps:0, w:0, gymW:0, tempo:1.0, dur:0.5,
+  reps:0, w:0, wMax:1, gymW:0, tempo:1.0, dur:0.5,
   enter(kind){                                        // looping: workout mode
     if (kind !== undefined && kind !== this.kind){ this.kind = kind; this.uAbs = 0; this.reps = 0; }
-    this.active = true; this.loop = true;
+    this.active = true; this.loop = true; this.wMax = 1;
   },
   /* one rep, played once as feedback for an in-run movement, then it lets go */
   oneShot(kind, dur){
     this.kind = kind; this.uAbs = 0; this.dur = dur || 0.45;
-    this.active = true; this.loop = false; this.driven = false;
+    this.active = true; this.loop = false; this.driven = false; this.wMax = 1;
     this.w = Math.max(this.w, 0.35);
   },
   /* driven: the phase arrives from outside — ultimately from a body. We smooth what is
      *displayed* and never what is decided on, so a jittery signal cannot make the penguin
-     twitch while the state machine upstream still reasons on the raw numbers. */
-  drive(kind, u){
+     twitch while the state machine upstream still reasons on the raw numbers.
+
+     `wMax` caps how far the exercise pose is allowed to blend in. A recognised rep drives it at
+     1 and fully replaces the run cycle; the live mirror passes the body's own depth, so someone
+     standing still is running and someone a third of the way into a squat is a third of the way
+     into the squat pose. Without the cap the pose would snap fully on at the first flicker of
+     movement, which is worse than the lag it was meant to remove. */
+  drive(kind, u, wMax){
     if (kind !== this.kind){ this.kind = kind; this.uAbs = clamp01(u); }
     this.active = true; this.loop = false; this.driven = true;
     this.uTgt = clamp01(u); this.driveT = 0;
-    this.w = Math.max(this.w, 0.35);
+    this.wMax = (wMax === undefined) ? 1 : clamp01(wMax);
+    /* a floor so a recognised rep is visible on the very first frame, but never above the cap */
+    this.w = Math.max(this.w, Math.min(0.35, this.wMax));
   },
   leave(){ this.active = false; this.driven = false; },
   reset(){ this.active=false; this.loop=true; this.driven=false;
-           this.uAbs=0; this.uTgt=0; this.driveT=0; this.reps=0; this.w=0; this.gymW=0; },
+           this.uAbs=0; this.uTgt=0; this.driveT=0; this.reps=0; this.w=0; this.wMax=1; this.gymW=0; },
   get name(){ return EX_NAMES[this.kind]; },
   step(dt){
-    const target = this.active ? 1 : 0;
+    const target = (this.active ? 1 : 0) * (this.driven ? this.wMax : 1);
     this.w = damp(this.w, target, this.loop ? 7.0 : 16.0, dt);
     this.gymW = damp(this.gymW, (this.active && this.loop) ? 1 : 0, 7.0, dt);
     if (this.gymW < 0.002) this.gymW = 0;
@@ -2999,7 +3027,27 @@ const Signal = {
     if (!this.live() || IS_LUNGE(kind)) return false;
     this.lastForm = (form === undefined) ? 1 : clamp01(form);
     this.last = kind; this.count++;
+    /* proof of real work: the belt's easing budget is refunded in full, so a player who is
+       actually completing reps has an unlimited allowance of slowed-down time */
+    Belt.effortT = 0;
     Run.repDone(kind);
+    return true;
+  },
+
+  /* The body is moving, but no machine has committed to calling it a rep yet. Drives the
+     penguin's pose and NOTHING else — no wall damage, no rep, and deliberately no touch on
+     `progT`, so the belt's easing still answers only to real rep progress.
+
+     This is what makes the character respond to the beginning of a movement. A state machine
+     cannot report a rep until it has enough evidence to be sure, and being sure takes a few
+     hundred milliseconds during which the player has already started moving and the penguin
+     has not — which reads as the game ignoring you. The weight arrives with the phase, so the
+     blend into the exercise pose is proportional to how far into the movement the body is: a
+     standing player keeps running, a half-squatting player is half in the squat. */
+  poseLive(kind, phase, weight){
+    if (!this.live() || IS_LUNGE(kind)) return false;
+    Ex.drive(kind, clamp01(phase), clamp01(weight));
+    this.liveCount = (this.liveCount||0) + 1;
     return true;
   },
 
@@ -3201,6 +3249,7 @@ const Cam3 = {
     laneChange(){},
     jump(){}, jumpHold(){},        /* nobody should be launched mid-calibration */
     repProgress(){},
+    poseLive(){},                  /* the penguin is off-screen behind the card anyway */
     repCompleted(kind){
       const C = Cam3;
       if (C.cal.stage !== C.Cal.STAGE.REPS) return;
@@ -3311,6 +3360,7 @@ const Belt = {
   base:B.tiers[0], speed:B.tiers[0], tier:0, dist:0, mult:1, multT:1, hold:false,
   /* lane mode has its own, slower ladder; every consumer reads it through here */
   effort:0,                       /* 0..1 — how much the belt is easing for a working body */
+  effortT:0,                      /* s of easing spent; a completed rep refunds it (see TUNING) */
   ladder(){ return Run.lanes ? RN.beltTiers : B.tiers; },
   /* the speed a wall closes at for someone who is actually doing the reps */
   workSpeed(i){ return this.tierSpeed(i) * RN.workBeltMul; },
@@ -3321,7 +3371,7 @@ const Belt = {
   scrollV:0,
   reset(){
     this.base=this.tierSpeed(0); this.speed=this.base; this.tier=0; this.dist=0; this.mult=1; this.multT=1;
-    this.effort=0;
+    this.effort=0; this.effortT=0;
     this.hold=false;
     this.surgeNext=rndR(B.surge.every[0],B.surge.every[1]); this.surgeState=0; this.surgeT=0;
     this.stutNext=rndR(B.stutter.every[0],B.stutter.every[1]); this.stutState=0; this.stutT=0;
@@ -3334,7 +3384,11 @@ const Belt = {
     for (let i=0;i<B.tierAt.length;i++) if (this.dist >= B.tierAt[i]) t = i;
     if (t !== this.tier){ this.tier = t; UI.tierUp(t); }
     /* a rep in flight eases the belt; pausing lets it pick back up */
-    const working = Run.lanes && Signal.progT < RN.workGap && Walls.chipOwner;
+    const wantWork = !!(Run.lanes && Signal.progT < RN.workGap && Walls.chipOwner);
+    /* metered, so movement that never completes a rep cannot stop the world forever */
+    if (wantWork) this.effortT += dt;
+    else this.effortT = Math.max(0, this.effortT - dt*RN.effortRefill);
+    const working = wantWork && this.effortT < RN.effortBudget;
     this.effort = damp(this.effort, working ? 1 : 0, working ? RN.effortUp : RN.effortDown, dt);
     const tierWant = this.tierSpeed(this.tier) * lerp(1, RN.workBeltMul, this.effort);
     const want = this.hold ? 0 : tierWant;
@@ -4610,7 +4664,13 @@ function camDbg(){
     'body     knee ' + b.knee.toFixed(0) + '  elb ' + b.elbow.toFixed(0) +
       '  tilt ' + b.torsoTilt.toFixed(0) + '  horiz ' + b.torsoHoriz.toFixed(0) + '\n' +
     'body2    push ' + b.pushDepth.toFixed(2) + '  span ' + b.ankleSpan.toFixed(2) +
-      '  drop ' + b.hipDrop.toFixed(2) + '\n' +
+      '  drop ' + b.hipDrop.toFixed(2) + '  rise ' + b.jumpRise.toFixed(3) + '\n' +
+    /* what to read when a push-up is not registering: `rest` is where this body's plank actually
+       sits, `prone` is the settle clock, `live` is the mirror driving the penguin */
+    'prone    rest ' + st.rest.toFixed(2) + '  prone ' + st.proneT + 'ms' +
+      '  live ' + (st.live ? st.liveU.toFixed(2)+'@'+st.liveW.toFixed(2) : '-') + '\n' +
+    'belt     ' + Belt.speed.toFixed(2) + ' u/s  ease ' + Belt.effort.toFixed(2) +
+      '  spent ' + Belt.effortT.toFixed(1) + '/' + TUNING.run.effortBudget + 's\n' +
     'cal      squat ' + d.cal.squatBottomKnee.toFixed(0) + '  jack ' + d.cal.jackOpenSpan.toFixed(2) +
       '  lunge ' + d.cal.lungeFullSpan.toFixed(2) + '  ' + (d.cal.ready?'ready':'DEFAULTS') + '\n' +
     'pose ev  ok ' + st.stats.completed + '  no ' + st.stats.rejected +
@@ -4731,7 +4791,14 @@ const Game = {
      Neither may clear the other's hold. */
   menuPause:false, trackHold:false,
   pause(v){ this.menuPause = !!v; this.paused = this.menuPause || this.trackHold; },
-  holdFor(v){ this.trackHold = !!v; this.paused = this.menuPause || this.trackHold; },
+  holdFor(v){
+    this.trackHold = !!v;
+    this.paused = this.menuPause || this.trackHold;
+    /* `progT` only advances inside the fixed step, so a pause freezes it at whatever it was —
+       and if the pause landed mid-rep it was 0, which means the belt resumes already easing for
+       work that stopped happening however long ago the player walked out of frame. */
+    if (this.paused){ Signal.progT = 99; Belt.effortT = 0; }
+  },
   workout(on, kind){
     if (on){
       for (let i=obsActive.length-1;i>=0;i--) despawn(obsActive[i]);

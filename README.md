@@ -167,12 +167,27 @@ tracking hold are independent, so neither clears the other.
 **Effort buys time.** This one is forced by arithmetic rather than taste. A keypress commits
 a rep in 0.42s; a real squat takes about two seconds, and four of them need ten seconds of
 visible wall — which no belt speed can provide across a 34-unit runway. So the wall does not
-run on a fixed timer. While a rep is in flight the belt eases to 12% of its tier speed, and
+run on a fixed timer. While a rep is in flight the belt eases to 20% of its tier speed, and
 it picks back up when you pause. Measured: bodies at 1.2s, 1.8s and 2.5s per rep all clear
 every wall at every tier with zero hits, while a player who dithers 1.5s before each rep gets
 caught by four walls out of four, and one who never moves gets caught immediately. The
 mechanic works at any rep speed instead of one particular one, and a slower body is
 accommodated automatically rather than punished.
+
+**…and the gift is metered, because otherwise it deadlocks.** This is not a balance dial. The
+easing reads *rep progress*, and a rep machine emits progress for as long as it believes a rep is
+underway — so a movement that keeps producing progress but never **completes**, which is exactly
+what a too-strict exercise does to an honest player, pinned the belt near zero indefinitely.
+The wall hung a metre from the player's face and the treadmill stopped. Nothing timed out, because
+from the belt's point of view the player was working hard the whole time. A real player reported
+this as "there's a point in the game where it just stops moving", and they were right.
+
+So easing spends a budget (`effortBudget`, 5s) and a **completed rep refunds it in full**. Anyone
+genuinely doing the work has an unlimited allowance and never learns this exists — measured: a
+player completing a rep every 0.5s stays eased for 13.3 of 14 seconds. Flail for five seconds
+without finishing one and the belt resumes and the wall arrives, which is the fail condition the
+design already wanted rather than a silent stall with no way out. `stall.mjs` (20 assertions)
+covers both halves.
 
 ## Workout mode
 
@@ -331,7 +346,8 @@ that change how the game feels, in the order I would touch them:
 | `run.wallReps` | `[2, 4]` | Courses of brickwork, scaled by belt tier. Four is about the most you can hit cleanly before the wall arrives. |
 | `run.repGap` / `repSlack` | `0.20s` / `1.35` | Minimum time between reps, and the margin the spawner assumes on top of it. Drop `repSlack` toward 1.0 and walls start arriving that are only *theoretically* survivable. |
 | `run.repDurBody` | `2.2s` | What the spawner assumes one *real* rep takes. This is the number the whole wall-timing model hangs off; `repDur` (0.42s) is only how long the keyboard's stand-in animation plays. Raise it and walls get further apart and more forgiving. |
-| `run.workBeltMul` | `0.12` | Belt speed while a rep is in flight, as a fraction of tier speed. This is what buys a slow body time. At 1.0 the wall runs on a pure timer and only very fast reps survive; below ~0.1 the world visibly stops dead. |
+| `run.workBeltMul` | `0.20` | Belt speed while a rep is in flight, as a fraction of tier speed. This is what buys a slow body time. At 1.0 the wall runs on a pure timer and only very fast reps survive; below ~0.15 the world reads as stopped dead rather than slowed. |
+| `run.effortBudget` / `effortRefill` | `5.0s` / `1.5` | How long the belt will stay eased without a **completed** rep, and how fast that budget recovers. A completed rep refunds it entirely, so this only ever bites a player who is moving without finishing anything. Set the budget very high and you restore the original deadlock. |
 | `run.effortUp` / `effortDown` / `workGap` | `9` / `2.6` / `0.30s` | How fast the easing engages, lets go, and how long a gap in the progress signal counts as having stopped. `workGap` has to comfortably exceed the inference interval or the belt will stutter between frames. |
 | `run.beltTiers` | `[5.0 … 7.6]` | The lane-mode ladder, roughly half the free-run one. Difficulty lives in reps-per-wall and wall frequency, not here. |
 | `run.wallEvery` / `wallQuiet` | `[74, 112]` / `14` | Belt-units between walls, and the quiet zone before one where obstacles stop spawning. The gap between those two numbers is the entire obstacle budget in lane mode — shrink `wallEvery` and obstacles disappear from the game. |

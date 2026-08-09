@@ -40,13 +40,19 @@ function riseOf(m, frame, body){
   return (aY - m.base)/Math.max(1e-4, body.legLen);
 }
 
-export function step(m, frame, body, cal, ev){
+/* `emit` false means: keep tracking, publish nothing. The detector stands the jump CONTROL down
+   while an exercise that contains its own hop is mid-rep, but the rise itself must keep being
+   measured through that — the burpee reads it to detect its finishing jump, and a baseline that
+   stopped updating for the duration of every burpee would be stale exactly when it is needed. */
+export function step(m, frame, body, cal, ev, emit){
   const dt = body.dtMs;
+  const out = (emit === false) ? null : ev;
   m.stateT += dt;
   if (m.refractory > 0) m.refractory = Math.max(0, m.refractory - dt);
 
   if (body.visMin.lunge < CONFIG.common.visGate){    // same landmarks a jump needs
     m.frozen = true; m.reset();
+    body.jumpRise = 0;
     return;
   }
   m.frozen = false;
@@ -54,6 +60,9 @@ export function step(m, frame, body, cal, ev){
   const rise = riseOf(m, frame, body);
   m.vel = rise - m.prevRise;
   m.prevRise = rise;
+  /* published for anything that needs "are the feet off the ground" without calibration —
+     the burpee's finishing hop is the reason this exists */
+  body.jumpRise = rise;
 
   switch (m.state){
     case 'GROUND':
@@ -63,8 +72,7 @@ export function step(m, frame, body, cal, ev){
       m.peak = 0;
       if (m.refractory > 0) break;
       if (rise > C.takeoffRise && m.vel > C.minUpVel){
-        ev.jump = true;                 // fired at takeoff, hold engaged
-        ev.jumpHold = true;
+        if (out){ out.jump = true; out.jumpHold = true; }   // fired at takeoff, hold engaged
         m.state = 'AIR'; m.stateT = 0; m.jumps++;
         m.refractory = C.refractoryMs;
         m.peak = rise;
@@ -74,14 +82,16 @@ export function step(m, frame, body, cal, ev){
     case 'AIR':
       m.peak = Math.max(m.peak, rise);
       /* a small jump releases the hold early, which is how a real jump height reaches the game */
-      if (m.stateT > C.holdDecideMs && m.peak < C.bigRise) ev.jumpHold = false;
-      else if (m.stateT <= C.holdDecideMs) ev.jumpHold = true;
+      if (out){
+        if (m.stateT > C.holdDecideMs && m.peak < C.bigRise) out.jumpHold = false;
+        else if (m.stateT <= C.holdDecideMs) out.jumpHold = true;
+      }
       if (rise < C.landRise && m.stateT > C.minAirMs){
-        ev.jumpHold = false;
+        if (out) out.jumpHold = false;
         m.state = 'GROUND'; m.stateT = 0;
       } else if (m.stateT > C.maxAirMs){
         /* never got back down — the baseline was probably wrong, so re-seed it */
-        ev.jumpHold = false;
+        if (out) out.jumpHold = false;
         m.haveBase = false; m.state = 'GROUND'; m.stateT = 0;
       }
       break;

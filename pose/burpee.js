@@ -10,16 +10,33 @@
    confirmed, the rep counts at a reduced form score. Rejecting it would mean punishing the
    player for where their phone is, which is never the right trade.
 
+   ### Two gates used to make this undetectable rather than merely strict
+
+   1. The chain could only start from STAND, and STAND needed a knee angle of 160 degrees.
+      BlazePose runs roughly 15 degrees pessimistic on peak knee extension, and a relaxed
+      standing posture is genuinely a little bent, so a real standing body often reads 150-155.
+      For those players the machine sat in IDLE forever and no burpee could ever be counted.
+      The bar now lives in `common.standKnee` and is 150, shared with the squat.
+
+   2. RETURN -> JUMP required either wrists above the head or `cal.ready && ankleRise`. Plenty
+      of people burpee without throwing their arms overhead, and before calibration the second
+      option did not exist at all — so an uncalibrated player who kept their hands low could
+      complete the entire movement and never be credited. It now also accepts
+      `body.jumpRise`, which the jump detector maintains against its own self-seeded baseline
+      and therefore needs no calibration.
+
    The stage-to-phase mapping is deliberate: the game's burpee pose is built by blending seven
    timed segments, and these numbers put the penguin at the same point in the movement as the
    person doing it, rather than playing an animation at its own pace.
    ===================================================================================== */
 
-import { CONFIG } from './config.js';
+import { CONFIG, visGate } from './config.js';
 import { span01 } from './body.js';
 
 const C = CONFIG.burpee;
 const SP = C.stagePhase;
+const L = CONFIG.live;
+const STAND_KNEE = CONFIG.common.standKnee;
 
 export function create(){
   return {
@@ -44,11 +61,17 @@ export function create(){
    designed behaviour, not an accident. */
 const onFloor = (body, cal)=> body.torsoHoriz <= C.floorTorsoHoriz;
 
+/* the finishing hop, by any of the three things that can evidence it */
+const hopping = (body, cal)=>
+  body.wristsAboveHead ||
+  body.jumpRise > C.jumpAnkleRise ||
+  (cal.ready && body.ankleRise > C.jumpAnkleRise);
+
 export function step(m, body, cal, ev){
   const dt = body.dtMs;
   const squatKnee = cal.burpeeSquatKnee;
 
-  if (body.visMin.burpee < CONFIG.common.visGate){
+  if (body.visMin.burpee < visGate('burpee')){
     m.frozen = true;
     if (m.state !== 'IDLE' && m.state !== 'STAND') ev.reject = 'WE LOST YOU';
     m.reset();
@@ -66,7 +89,7 @@ export function step(m, body, cal, ev){
 
   switch (m.state){
     case 'IDLE':
-      if (body.knee > CONFIG.squat.standKnee){ m.state='STAND'; m.stateT=0; }
+      if (body.knee > STAND_KNEE){ m.state='STAND'; m.stateT=0; }
       break;
 
     case 'STAND':
@@ -79,11 +102,11 @@ export function step(m, body, cal, ev){
 
     case 'SQUAT':
       m.deepest = Math.min(m.deepest, body.knee);
-      m.phase = SP.STAND + span01(body.knee, CONFIG.squat.standKnee, squatKnee)*(SP.SQUAT-SP.STAND);
+      m.phase = SP.STAND + span01(body.knee, STAND_KNEE, squatKnee)*(SP.SQUAT-SP.STAND);
       ev.progress = true; ev.phase = m.phase;
       if (onFloor(body, cal) && m.stateT > C.minStageMs){
         m.state='FLOOR_DOWN'; m.stateT=0; m.sawFloor=true;
-      } else if (body.knee > CONFIG.squat.standKnee && body.torsoTilt < C.standTilt &&
+      } else if (body.knee > STAND_KNEE && body.torsoTilt < C.standTilt &&
                  m.stateT > C.minStageMs){
         /* Stood back up out of the squat: a squat is not a burpee.
            The torso gate is load-bearing, not decoration. Kicking the legs back straightens
@@ -105,7 +128,7 @@ export function step(m, body, cal, ev){
       m.phase = SP.FLOOR_UP;
       ev.progress = true; ev.phase = m.phase;
       /* back off the floor and re-verticalising */
-      if (!onFloor(body, cal) && body.knee < CONFIG.squat.standKnee && m.stateT > C.minStageMs){
+      if (!onFloor(body, cal) && body.knee < STAND_KNEE && m.stateT > C.minStageMs){
         m.state='RETURN'; m.stateT=0;
       }
       break;
@@ -113,19 +136,23 @@ export function step(m, body, cal, ev){
     case 'RETURN':
       m.phase = SP.RETURN;
       ev.progress = true; ev.phase = m.phase;
-      if (body.wristsAboveHead || (cal.ready && body.ankleRise > C.jumpAnkleRise)){
+      if (hopping(body, cal)){
         m.state='JUMP'; m.stateT=0; m.sawJump=true;
-      } else if (body.knee > CONFIG.squat.standKnee && m.stateT > 900){
+      } else if (body.knee > STAND_KNEE && m.stateT > C.returnGiveUpMs){
         /* stood up and stopped, without the jump */
         ev.reject = 'FINISH WITH A JUMP';
         m.reset(); m.state='STAND';
       }
       break;
 
-    case 'JUMP':
+    case 'JUMP': {
       m.phase = SP.JUMP;
       ev.progress = true; ev.phase = m.phase;
-      if (!body.wristsAboveHead && body.knee > CONFIG.squat.standKnee - 12){
+      /* Close on landing, or on a timeout: someone who finishes with their arms still up would
+         otherwise sit here waiting for a hand to come down, and the hop — the thing the chain
+         was actually waiting for — has already happened. */
+      const landed = !body.wristsAboveHead && body.knee > STAND_KNEE - 12;
+      if (landed || m.stateT > C.jumpMaxMs){
         if (m.sawJump && (m.sawFloor || m.deepest < squatKnee)){
           ev.completed = true;
           /* an unconfirmed floor phase still counts, at a reduced score */
@@ -138,5 +165,19 @@ export function step(m, body, cal, ev){
         m.reset(); m.state='STAND'; m.phase = 1;
       }
       break;
+    }
   }
+}
+
+/* ---- the live mirror: see the note in pushup.js -----------------------------------------
+   A burpee is a chain rather than a depth, so there is no single number to read. What this
+   covers is the gap before the chain engages — the player is already dropping into the squat
+   while STAND is still waiting for the knee to cross its threshold. Once the machine is running
+   its own phase is authoritative and this is not consulted. */
+export function livePhase(m, body, cal){
+  if (body.torsoHoriz <= C.floorTorsoHoriz) return { u: SP.FLOOR_DOWN, w: 1 };
+  if (body.wristsAboveHead) return { u: SP.JUMP, w: 1 };
+  const d = span01(body.knee, STAND_KNEE, cal.burpeeSquatKnee);
+  if (d < L.minW) return null;
+  return { u: SP.STAND + d*(SP.SQUAT - SP.STAND), w: d };
 }

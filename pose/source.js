@@ -138,28 +138,26 @@ function handle(S, m){
     S.stats.lastResultT = m.t;
     S.wantFrame = true;
     if (S.onResult) S.onResult(m, m.t);
+    /* Grab the next frame NOW rather than waiting for the next animation frame. The pump used to
+       only send from inside requestAnimationFrame, so every inference was followed by up to a
+       full display frame of doing nothing — pure added staleness in the pose the game reacts to,
+       for no benefit. This costs nothing: the same number of inferences run, they just stop
+       idling between them. The 30Hz interval below still caps the rate, so heat is unchanged. */
+    if (S.running) pump(S);
   } else if (m.type === 'error'){
     if (S.onError) S.onError(m);
     S.wantFrame = true;
   }
 }
 
-/* ---- the pump: one frame in flight at a time -------------------------------------------- */
-export function start(S){
-  if (S.running) return;
-  S.running = true;
-  let lastTick = performance.now();
-
-  const tick = ()=>{
+/* ---- the pump: one frame in flight at a time --------------------------------------------
+   Driven from two places, on purpose: the animation frame keeps it ticking when nothing is in
+   flight, and `handle()` calls it the instant a result lands so the next capture does not wait
+   out the rest of the display frame. Guarded by `wantFrame` and `minIntervalMs`, so calling it
+   twice in quick succession is harmless — the second call simply returns. */
+function pump(S){
     if (!S.running) return;
-    S._raf = requestAnimationFrame(tick);
     const now = performance.now();
-    /* rolling fps of the capture loop, which is the render rate, not the inference rate */
-    S._fpsWindow.push(now - lastTick); if (S._fpsWindow.length > 30) S._fpsWindow.shift();
-    lastTick = now;
-    let sum = 0; for (const d of S._fpsWindow) sum += d;
-    S.stats.fps = S._fpsWindow.length ? 1000/(sum/S._fpsWindow.length) : 0;
-
     if (!S.video || S.video.readyState < 2) return;
     if (!S.wantFrame) { S.stats.dropped++; return; }     // inference still busy: skip, never queue
     if (now - S.lastSentT < S.minIntervalMs) return;
@@ -206,6 +204,23 @@ export function start(S){
     }
     /* the letterbox offsets, so a caller drawing an overlay can undo them */
     S.box = { dx, dy, dw, dh, size:CAPTURE };
+}
+
+export function start(S){
+  if (S.running) return;
+  S.running = true;
+  let lastTick = performance.now();
+
+  const tick = ()=>{
+    if (!S.running) return;
+    S._raf = requestAnimationFrame(tick);
+    const now = performance.now();
+    /* rolling fps of the capture loop, which is the render rate, not the inference rate */
+    S._fpsWindow.push(now - lastTick); if (S._fpsWindow.length > 30) S._fpsWindow.shift();
+    lastTick = now;
+    let sum = 0; for (const d of S._fpsWindow) sum += d;
+    S.stats.fps = S._fpsWindow.length ? 1000/(sum/S._fpsWindow.length) : 0;
+    pump(S);
   };
   S._raf = requestAnimationFrame(tick);
 }

@@ -63,6 +63,10 @@ export function makeBody(){
     wristsAboveShoulders:false, wristsAboveHead:false,
     /* descent from the calibrated standing baseline, in leg lengths (+ = lower) */
     hipDrop:0, ankleRise:0,
+    /* the SAME rise, but against the jump machine's own self-seeded baseline, so it needs no
+       calibration. Written by jump.js each frame; the burpee reads it to see its finishing hop,
+       which used to require calibration and therefore could not happen on a first run. */
+    jumpRise:0,
     /* per-exercise confidence */
     vis:{ squat:0, jack:0, lunge:0, pushup:0, burpee:0, frame:0 },
     visMin:{ squat:0, jack:0, lunge:0, pushup:0, burpee:0, frame:0 },

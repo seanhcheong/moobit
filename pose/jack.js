@@ -10,10 +10,11 @@
      4. must return   back to CLOSED, or no rep
    ===================================================================================== */
 
-import { CONFIG } from './config.js';
+import { CONFIG, visGate } from './config.js';
 import { span01 } from './body.js';
 
 const C = CONFIG.jack;
+const L = CONFIG.live;
 
 export function create(){
   return {
@@ -30,7 +31,7 @@ export function step(m, body, cal, ev){
   const span = body.ankleSpan;
   const armsUp = body.wristsAboveShoulders;
 
-  if (body.visMin.jack < CONFIG.common.visGate){
+  if (body.visMin.jack < visGate('jack')){
     m.frozen = true;
     if (m.state === 'OPEN') ev.reject = 'WE LOST YOUR ARMS OR FEET';
     m.reset();
@@ -89,4 +90,16 @@ export function step(m, body, cal, ev){
       }
       break;
   }
+}
+
+/* ---- the live mirror: see the note in pushup.js ---------------------------------------
+   Stateless. Takes whichever of the two signals is further along, so the penguin's arms are
+   already on the way up as the player's are, rather than snapping when both gates finally
+   agree that a rep has begun. */
+export function livePhase(m, body, cal){
+  const feet = span01(body.ankleSpan, cal.jackCloseSpan, cal.jackOpenSpan);
+  const arms = body.wristsAboveShoulders ? 1 : 0;
+  const d = Math.max(feet, arms*0.85);
+  if (d < L.minW) return null;
+  return { u: d*0.5, w: d };
 }
