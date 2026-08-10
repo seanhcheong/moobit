@@ -623,8 +623,15 @@ const TUNING = {
        squats, so "4 reps" would mean three completely different workouts depending on which
        exercise the wall happened to draw. Reps are derived from the interval instead, which is
        what keeps every round the same amount of work. */
-    repSec: [2.2, 2.4, 1.2, 3.5],     // squat, push-up, jumping jack, burpee
+    /* Seeds only — the session learns the real numbers. Deliberately PESSIMISTIC: they are used to
+       size walls before anything has been learned, so erring slow asks for fewer reps on a first
+       session and the estimate comes down as the player proves faster. Erring fast does the
+       opposite, and the price of that is being knocked down by a wall sized for someone else. */
+    repSec: [2.5, 2.7, 1.9, 3.9],     // squat, push-up, jumping jack, burpee
     repRange: [3, 16],                // whatever the arithmetic says, ask for a sane number
+    /* the band a learned rep duration is allowed to occupy. Outside it the arithmetic degenerates:
+       too fast saturates the rep count, too slow makes every wall unaffordable. */
+    secBounds: [0.9, 6.0],
     /* The dive headroom the spawner reserves in endless mode. Calm mode does not lean on diving
        to close a gap, and reserving 1.8 u/s of it caps a wall at ~4 reps on a 34-unit runway —
        which is the arithmetic that made short walls the only possibility. */
@@ -2752,18 +2759,29 @@ const Session = {
     try {
       const v = JSON.parse(localStorage.getItem('br.pace') || 'null');
       if (Array.isArray(v) && v.length === HI.repSec.length &&
-          v.every(x => typeof x === 'number' && x > 0.3 && x < 12)) this.obsSec = v;
+          v.every(x => typeof x === 'number' && x >= HI.secBounds[0] && x <= HI.secBounds[1]))
+        this.obsSec = v.slice();
     } catch(e){}
   },
 
-  /* one rep landed. Time between consecutive reps of the SAME kind is the honest measure — the
-     first rep of a wall is preceded by a whole rest interval, which the window rejects. */
+  /* One rep landed. Time between consecutive reps of the SAME kind is the honest measure — the
+     first rep of a wall is preceded by a whole rest interval, which the window rejects.
+
+     ONLY LEARN FROM A BODY. The keyboard commits a rep in `repDur` (0.42s), roughly a fifth of what
+     a real squat takes. Measured: twelve keypresses dragged the squat estimate from 2.02s down to
+     0.68s, and it was then persisted — so the next camera session sized every wall for a thumb and
+     asked a body for 16 reps of everything. Testing with keys must not teach the game a lie.
+
+     AND CLAMP IT. There was no bound after the lerp, so drift in either direction was permanent:
+     too low saturates `need` at repRange[1], too high makes walls unaffordable and the session can
+     never finish. */
   noteRep(kind){
     const dt = this.t - this.lastRepT;
     const same = kind === this.lastRepKind;
     this.lastRepT = this.t; this.lastRepKind = kind;
+    if (Signal.source !== 'pose') return;          // a keypress is not a rep duration
     if (!same || !(dt > 0.5 && dt < 12)) return;
-    this.obsSec[kind] = lerp(this.obsSec[kind], dt, 0.35);
+    this.obsSec[kind] = clamp(lerp(this.obsSec[kind], dt, 0.35), HI.secBounds[0], HI.secBounds[1]);
   },
   secFor(kind){ return this.obsSec[kind] || HI.repSec[kind] || 2.2; },
 
@@ -2779,9 +2797,12 @@ const Session = {
     this.load();
   },
 
-  /* endless mode never caps, never calms; the workout does both */
-  tierCap(){ return this.hiit ? this.cfg().tierCap : 99; },
-  calm(){ return this.hiit; },
+  /* Endless mode never caps and never calms; the workout does both. Both read `Run.lanes` LIVE
+     rather than the value latched at start, because the lanes toggle is live mid-run — flipping it
+     off used to leave a free run capped at the workout's tier and silently drained of surges. */
+  on(){ return this.hiit && Run.lanes; },
+  tierCap(){ return this.on() ? this.cfg().tierCap : 99; },
+  calm(){ return this.on(); },
 
   /* How many reps this wall should ask for. Derived from the work interval and the cost of the
      exercise drawn, then bounded by `afford` — how many the runway can actually guarantee before
@@ -2807,36 +2828,43 @@ const Session = {
 
   /* belt units of recovery before the next wall is due */
   restDist(){
-    if (!this.hiit) return rndR(RN.wallEvery[0], RN.wallEvery[1]);
+    if (!this.on()) return rndR(RN.wallEvery[0], RN.wallEvery[1]);
     return this.cfg().restSec * Math.max(1, Belt.tierSpeed(Belt.tier));
   },
 
   /* Is another wall allowed? In a workout the answer becomes no once the rounds are used up,
      which is what makes the session finite. */
   wantsWall(){
-    if (!this.hiit) return true;
+    if (!this.on()) return true;
     return this.phase !== 'cooldown' && this.phase !== 'done' && this.round < this.rounds;
   },
 
-  wallSpawned(){ if (this.hiit){ this.round++; this.phase = 'work'; this.phaseT = 0; } },
+  wallSpawned(){ if (this.on()){ this.round++; this.phase = 'work'; this.phaseT = 0; } },
   /* A wall resolved — shattered, hopped or hit. Either way the round is spent, and the recovery
      clock starts HERE rather than at the spawn. That distinction is the difference between a real
      rest interval and a nominal one: scheduling the next wall from the previous wall's spawn means
      the gap silently includes the whole work interval, so a configured 30s rest was measured at
      24s and shrank further the longer the work took. */
   wallResolved(){
-    if (!this.hiit) return;
+    if (!this.on()) return;
     this.phase = this.round >= this.rounds ? 'cooldown' : 'rest';
     this.phaseT = 0;
     Run.wallNext = this.restDist();
+    /* Persist per ROUND, not only on a finished session. The learned pace exists for players who
+       are slower than average, and those are exactly the players most likely to stop before the
+       last round — so saving only on completion withheld it from everyone it was built for. */
+    this.save();
   },
 
   step(dt){
     this.phaseT += dt; this.t += dt;
-    if (!this.hiit) return;
+    if (!this.on()) return;
     if (this.phase === 'work') this.workT += dt; else this.restT += dt;
     if (this.phase === 'warmup' && this.phaseT >= HI.warmupSec){ this.phase = 'rest'; this.phaseT = 0; }
-    if (this.phase === 'cooldown' && this.phaseT >= HI.cooldownSec && !Walls.busy()){
+    /* `Signal.live()` and not merely Game.state: during a ragdoll the state is still 'play' while
+       P.dying is true, so a knock-down in the last second of cool-down used to fire finish() first
+       and congratulate the player on a run they had just lost. */
+    if (this.phase === 'cooldown' && this.phaseT >= HI.cooldownSec && !Walls.busy() && Signal.live()){
       this.phase = 'done';
       this.save();
       Game.finish();
@@ -2844,7 +2872,7 @@ const Session = {
   },
 
   label(){
-    if (!this.hiit) return '';
+    if (!this.on()) return '';
     if (this.phase === 'warmup')   return 'WARM UP';
     if (this.phase === 'cooldown') return 'COOL DOWN';
     if (this.phase === 'done')     return 'DONE';
@@ -2997,7 +3025,11 @@ const Walls = {
     const brickGeo = roundedBox(1.0, 1.0, 0.52, 0.09, 2);
     const bricks = new THREE.InstancedMesh(brickGeo,
       physMat({ vertexColors:false, roughness:0.5, clearcoat:0.3, envMapIntensity:0.9 }),
-      WALL_COLS*RN.wallReps[1]);
+      /* the TALLEST wall any mode can ask for. Endless caps at wallReps[1]=4 courses, but a HIIT
+         wall derives its count from the work interval and reaches repRange[1]=16 — and writing past
+         an InstancedMesh's buffer is silently dropped by the typed array, so the wall rendered four
+         courses while its collider stood full height. */
+      WALL_COLS*Math.max(RN.wallReps[1], HI.repRange[1]));
     bricks.castShadow = true; bricks.frustumCulled = false;
     bricks.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     root.add(bricks);
@@ -3248,6 +3280,10 @@ const Signal = {
     /* proof of real work: the belt's easing budget is refunded in full, so a player who is
        actually completing reps has an unlimited allowance of slowed-down time */
     Belt.effortT = 0;
+    /* Count reps in the SESSION, not in Signal.count — that one is also incremented by laneChange
+       and is never cleared between runs, so the clock-out card was reporting lunges as reps and
+       summing every attempt since the page loaded. */
+    Session.reps++;
     Session.noteRep(kind);        /* learn how long this player's reps actually take */
     Run.repDone(kind);
     return true;
@@ -4582,14 +4618,14 @@ const UI = {
   round(){
     const c = this.roundChip;
     if (!c) return;
-    const on = Session.hiit && Game.state === 'play';
+    const on = Session.on() && Game.state === 'play';
     const txt = on ? Session.label() : '';
-    if (this._roundTxt !== txt){
-      this._roundTxt = txt;
-      c.classList.toggle('on', on);
-      c.classList.toggle('rest', Session.phase === 'rest' || Session.phase === 'warmup');
-      if (on) c.textContent = txt;
-    }
+    /* Visibility is decided EVERY frame; only the text is cached. Putting the classList toggles
+       inside the text guard meant a state that changed without changing the label left the chip
+       stuck — visible after the run ended, or frozen mid-session when the lanes toggle flipped. */
+    c.classList.toggle('on', on);
+    c.classList.toggle('rest', on && (Session.phase === 'rest' || Session.phase === 'warmup'));
+    if (on && this._roundTxt !== txt){ this._roundTxt = txt; c.textContent = txt; }
   },
   /* the tracking state, as a colour you can read at three metres */
   tracking(s){
@@ -4674,7 +4710,7 @@ const UI = {
     const btn = $('btnAgain');
     if (finished){
       L.textContent = 'Shift Complete';
-      this.deadScore.textContent = String(Signal.count);
+      this.deadScore.textContent = String(Session.reps);
       this.deadSub.innerHTML = 'REPS  ·  ' + fmtMinSec(Session.workT + Session.restT)
                              + '  ·  ' + Session.level.toUpperCase();
       /* "RUN AGAIN" is arcade language, and putting it under a completed workout quietly undoes
@@ -5072,10 +5108,18 @@ if (window.visualViewport) visualViewport.addEventListener('resize', ()=>resize(
 const Game = {
   state:'title', paused:false, startedAt:0,
   resetWorld(){
+    /* THE SESSION RESETS HERE, not in start(). `restart()` — which is what RUN AGAIN and the `r`
+       key call — only ever went through resetWorld, so a session left in phase 'done' survived it:
+       wantsWall() stayed false forever, no wall spawned, Run.wallNext oscillated under wallQuiet so
+       Walls.busy() stayed true with zero walls, and that suppressed the obstacle spawner too. The
+       result was a run with nothing in it that could be neither lost nor finished. Verified: 0 wall
+       frames and 0 obstacle frames across two minutes. resetWorld is the one path every entry into
+       a run shares, so it is the only correct home for this. */
+    Session.start(Run.lanes && Settings.hiit, Settings.level);
     for (let i=obsActive.length-1;i>=0;i--) despawn(obsActive[i]);
     Belt.reset(); Belt.scoring = false; Belt.hold = false; Ex.reset(); Run.reset();
     RepDrive.cancel(); Signal.track = TRACK.GOOD; this.holdFor(false);
-    Signal.progCount = 0; Signal.rejected = 0;
+    Signal.progCount = 0; Signal.rejected = 0; Signal.count = 0; Signal.last = -1;
     Score.reset();
     Spawn.gapLeft = 16; Spawn.blocked = 0; Spawn.lastLead = 9.9; Spawn.minLead = 99;
     Spawn.count = 0; Spawn.patterns = 0;
@@ -5092,9 +5136,7 @@ const Game = {
     if (this.state !== 'title') return;
     this.state = 'play'; this.startedAt = performance.now();
     In.demo = false;
-    /* the workout only exists in lane mode; free-run is always the endless arcade */
-    Session.start(Run.lanes && Settings.hiit, Settings.level);
-    this.resetWorld();
+    this.resetWorld();          /* resets the Session too — see resetWorld */
     Belt.scoring = true;
     UI.showCard(UI.cardStart, false);
     UI.moves(Run.lanes);
