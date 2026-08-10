@@ -75,11 +75,23 @@ The laptop test validates detection. It cannot validate the setup you actually i
 the floor angled up, you 2.5 m away. For that the page has to reach your phone over a secure
 context. Easiest options, in order of hassle:
 
-1. **A tunnel** — `cloudflared tunnel --url http://localhost:8000` or ngrok. Gives you an https
-   URL you can open on the phone. Nothing to install on the phone.
-2. **https with a self-signed certificate** on your laptop, then accept the warning on the phone.
-3. **The Capacitor app** — the real target, and the only one that gets you the native camera
+1. **Android: USB port forwarding.** The least hassle by a wide margin, and no third party sees
+   your traffic. Enable USB debugging on the phone, plug it in, open `chrome://inspect` on the
+   laptop, and under **Port forwarding** map device port `8000` to `localhost:8000`. Then open
+   **http://localhost:8000/index.html** *on the phone* — Chrome treats a forwarded localhost as a
+   genuine secure context, so the camera works with no tunnel and no certificate.
+2. **A tunnel** — `cloudflared tunnel --url http://localhost:8000` or ngrok. Gives you an https
+   URL you can open on the phone. Nothing to install on the phone, and the only easy option on
+   iOS, which has no equivalent of the flag or the port forward.
+3. **https with a self-signed certificate** on your laptop, then accept the warning on the phone.
+   Be aware that a cert the phone does not trust can still leave the origin non-secure, so this
+   one fails in a way that looks like the app is broken rather than the certificate.
+4. **The Capacitor app** — the real target, and the only one that gets you the native camera
    permission flow. See the device-build section in `README.md`.
+
+**Which browser.** On Android, Chrome: it is real Chromium with WASM SIMD, and MediaPipe is a
+Google library tested against it first. On iOS, Safari — every iOS browser is WebKit underneath, so
+Chrome there is Safari with an extra permission layer and no upside.
 
 Things I expect to bite on the phone, so worth watching for:
 
