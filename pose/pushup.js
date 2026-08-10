@@ -68,8 +68,16 @@ function isProne(body, cal){ return body.torsoHoriz <= C.torsoHorizMax; }
 
 /* The elbow is a bonus signal, so its bar is the one this exercise already cleared plus a
    margin — not 0.7, which a prone body in front of a floor camera essentially never reaches,
-   which made the bonus unreachable and scored every honest push-up as unverified form. */
-const elbowLegible = (body)=> body.visMin.pushup > visGate('pushup') + 0.15;
+   which made the bonus unreachable and scored every honest push-up as unverified form.
+
+   It asks about the ELBOWS' own visibility. It used to read `visMin.pushup`, the minimum across
+   every landmark the exercise needs, back when the elbows were part of that set. They are not
+   any more — they were removed so an invisible elbow could not refuse a rep outright — and
+   leaving this reading the group would have quietly inverted its meaning: it would have reported
+   the elbow as legible whenever the shoulders, hips and wrists were clear, and then read an
+   angle off a landmark the model was guessing at. A bonus that fires on a guess is worse than
+   no bonus, because it lands in the form score as if it were evidence. */
+const elbowLegible = (body)=> body.visMin.pushupElbow > visGate('pushup') + 0.15;
 
 /* the height the shoulders must return to for the rep to close: this player's own plank, or the
    calibrated top if that is lower */

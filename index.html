@@ -86,6 +86,18 @@
   .sub{font-size:13.5px;letter-spacing:.06em;opacity:.9;margin:8px 0 0;line-height:1.55}
   @media (max-width:430px){ .card{padding:22px 20px 24px;max-width:92vw} .sub{font-size:12px} .keys{font-size:10.5px} }
   .keys{margin-top:14px;font-size:11.5px;letter-spacing:.08em;opacity:.72;line-height:1.85}
+  /* the refused-rep breakdown. Hidden unless something was actually refused, because an empty
+     panel on a clean run reads as a fault report. Deliberately screenshot-legible: this is meant
+     to be photographed and sent to someone who needs to know WHY reps did not count. */
+  #deadDiag{display:none;margin:14px auto 0;padding:11px 13px 10px;max-width:330px;text-align:left;
+    background:rgba(0,0,0,.24);border:1.5px solid rgba(255,255,255,.14);border-radius:12px;
+    font-size:11px;letter-spacing:.06em;line-height:1.7}
+  #deadDiag.on{display:block}
+  #deadDiag .dgH{opacity:.62;font-size:9.5px;letter-spacing:.14em;margin-bottom:5px}
+  #deadDiag .dgR{display:flex;justify-content:space-between;gap:12px}
+  #deadDiag .dgR span:first-child{opacity:.9;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #deadDiag .dgR span:last-child{opacity:.7;flex:0 0 auto;font-variant-numeric:tabular-nums}
+  #deadDiag .dgWhy{color:#ffd68a}
   kbd{background:rgba(255,255,255,.14);border:1.5px solid rgba(255,255,255,.22);border-bottom-width:3px;
     border-radius:7px;padding:2px 7px;font-family:var(--font);font-weight:900;font-size:11px}
   .big{font-size:clamp(50px,14vw,86px);color:var(--sun)}
@@ -327,6 +339,7 @@
       <div class="lbl" id="deadLbl">Run Over</div>
       <div id="deadScore" class="num big">0</div>
       <div class="sub" id="deadSub">&nbsp;</div>
+      <div id="deadDiag"></div>
       <button class="btn" id="btnAgain">RUN AGAIN</button>
     </div>
   </div>
@@ -699,6 +712,12 @@ const fmtMinSec = (s)=>{
 };
 const rndI = (a,b)=> a + Math.floor(rnd()*(b-a+1));
 const pick = (arr)=> arr[Math.floor(rnd()*arr.length)];
+/* Every string this file interpolates into innerHTML today is one of its own literals, so this is
+   not fixing a live hole. It is here because the rejection reasons come from the detector modules
+   and are keys in a tally, which makes them the first text in the game that flows from another
+   layer into markup — and "it happens to be safe right now" is not a property worth relying on. */
+const esc = (s)=> String(s).replace(/[&<>"']/g, (c)=>
+  ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[c]);
 
 /* scratch — every frame-loop vector math uses these, nothing is ever allocated in a step */
 const _v1=new THREE.Vector3(), _v2=new THREE.Vector3(), _v3=new THREE.Vector3(), _v4=new THREE.Vector3();
@@ -2754,6 +2773,25 @@ const Session = {
   obsSec: HI.repSec.slice(),
   lastRepT:-99, lastRepKind:-1,
 
+  /* WHY REPS DID NOT COUNT, tallied by reason. The detectors have always produced these strings
+     and the game has always thrown them away, which made "it isn't tracking me" impossible to
+     tell apart from "you are two centimetres short of depth" — from either side of the screen.
+     Keeping the counts lets the clock-out card say which it was, so one screenshot answers a
+     question that otherwise needs a week of guessing at synthetic bodies. */
+  rejN:0, rejWhy:Object.create(null),
+  noteReject(why){
+    this.rejN++;
+    const k = String(why || 'REFUSED');
+    this.rejWhy[k] = (this.rejWhy[k] || 0) + 1;
+  },
+  /* the `n` most common reasons, commonest first */
+  topRejects(n){
+    const out = [];
+    for (const k in this.rejWhy) out.push([k, this.rejWhy[k]]);
+    out.sort((a,b)=> b[1] - a[1] || (a[0] < b[0] ? -1 : 1));
+    return out.slice(0, n);
+  },
+
   save(){ try { localStorage.setItem('br.pace', JSON.stringify(this.obsSec)); } catch(e){} },
   load(){
     try {
@@ -2794,6 +2832,9 @@ const Session = {
     this.round = 0; this.phase = this.hiit ? 'warmup' : 'work'; this.phaseT = 0;
     this.reps = 0; this.workT = 0; this.restT = 0;
     this.t = 0; this.lastRepT = -99; this.lastRepKind = -1;
+    /* a fresh object rather than deleting keys: the tally must not survive into the next run,
+       which is the bug `Signal.count` had — it summed every attempt since the page loaded */
+    this.rejN = 0; this.rejWhy = Object.create(null);
     this.load();
   },
 
@@ -3286,6 +3327,24 @@ const Signal = {
     Session.reps++;
     Session.noteRep(kind);        /* learn how long this player's reps actually take */
     Run.repDone(kind);
+    return true;
+  },
+
+  /* A machine looked at a movement and decided it was not a rep, and said why.
+     `pose/detector.js` has always called this on the sink and `Signal` has always been the sink
+     during play — but it had no such method, so every reason string was discarded. The only
+     consumer was calibration's own sink, which meant coaching worked while you were being taught
+     the exercises and then went silent for the entire game.
+     That silence is the worst outcome available: an honest player two centimetres short of depth
+     got the same feedback as a player whose camera never loaded, which is none, and concluded the
+     tracking was broken. Cheap to fix, and it also makes a real-body test diagnostic instead of
+     just pass or fail. */
+  repRejected(kind, why){
+    if (!this.live() || IS_LUNGE(kind)) return false;
+    this.rejected++;
+    Session.noteReject(why);
+    UI.reject(why);
+    Sfx.nope();
     return true;
   },
 
@@ -4333,6 +4392,11 @@ const Sfx = {
   jump(){ this.blip('sine', 300, 620, 0, 0.16, 0.13); this.burst(0.10, 0.10, 900, 300); },
   land(i){ this.blip('sine', 190, 70, 0, 0.10+0.16*i, 0.13, 500); this.burst(0.13, 0.06+0.10*i, 700, 180); },
   thud(i){ this.blip('sine', 130, 55, 0, 0.10+0.12*i, 0.16, 380); },
+  /* a refused rep. Quiet and falling, so it reads as "not yet" rather than as damage — it must
+     not be mistaken for `thud`, which is the sound of the player being hit. It exists because a
+     prone player is not necessarily looking at the screen when the amber text appears. */
+  nope(){ this.blip('triangle', 300, 200, 0, 0.055, 0.09, 1400);
+          this.blip('triangle', 220, 150, 0.075, 0.05, 0.10, 1400); },
   dive(){ this.burst(0.34, 0.16, 380, 2600, 'bandpass'); this.blip('triangle', 200, 520, 0, 0.10, 0.22); },
   slide(){ this.burst(0.55, 0.14, 1500, 320, 'bandpass'); },
   bounce(i){ this.blip('sine', 160, 460, 0, 0.14+i*0.10, 0.17); this.blip('triangle', 620, 260, 0, 0.07, 0.12); },
@@ -4430,7 +4494,7 @@ const UI = {
     this.score=$('score'); this.best=$('best'); this.tierNum=$('tierNum'); this.fill=$('speedFill');
     this.scoreBox=$('scoreBox'); this.tierBox=$('tierBox'); this.surgeEl=$('surge'); this.vig=$('vig');
     this.cardStart=$('cardStart'); this.cardCal=$('cardCal'); this.cardDead=$('cardDead');
-    this._calTitle=this._calBig=this._calSub=''; this._calProg=-1; this._calOn=false; this.deadScore=$('deadScore'); this.deadSub=$('deadSub');
+    this._calTitle=this._calBig=this._calSub=''; this._calProg=-1; this._calOn=false; this.deadScore=$('deadScore'); this.deadSub=$('deadSub'); this.deadDiag=$('deadDiag');
     this.hint=$('hint'); this.dbg=$('dbg'); this.setPanel=$('settings'); this.setCard=$('setCard');
     this.gymBar=$('gymBar'); this.gymName=$('gymName'); this.gymReps=$('gymReps');
     this.moveBar=$('moveBar'); this.coinBox=$('coinBox'); this.coinEl=$('coins');
@@ -4723,7 +4787,33 @@ const UI = {
       this.deadSub.innerHTML = isBest ? 'NEW BEST' : 'BEST ' + Math.floor(Score.best);
       if (btn) btn.textContent = 'RUN AGAIN';
     }
+    this.diag();
     this.showCard(this.cardDead, true);
+  },
+
+  /* WHY REPS DID NOT COUNT. Shown only when the camera was driving and something was actually
+     refused: on a keyboard run there are no refusals to explain, and on a clean camera run an
+     empty diagnostic panel reads as a fault report rather than as a clean bill of health.
+     The acceptance rate is the number worth leading with. A player who did 20 push-ups and saw 12
+     counted cannot tell whether the other 8 were shallow, too fast, mistaken for a burpee, or lost
+     to a limb the model could not see — and neither can anyone they report it to. The detectors
+     know exactly which; this is the first thing in the game that lets them say so. */
+  diag(){
+    const D = this.deadDiag;
+    if (!D) return;
+    const tries = Session.reps + Session.rejN;
+    if (Signal.source !== 'pose' || Session.rejN === 0 || tries === 0){
+      D.classList.remove('on'); D.innerHTML = ''; return;
+    }
+    const pct = Math.round(100*Session.reps/tries);
+    let h = '<div class="dgH">REP TRACKING</div>'
+          + '<div class="dgR"><span>counted</span><span>' + Session.reps + ' / ' + tries
+          + '  (' + pct + '%)</span></div>';
+    for (const [why, n] of Session.topRejects(3)){
+      h += '<div class="dgR"><span class="dgWhy">' + esc(why) + '</span><span>' + n + '</span></div>';
+    }
+    D.innerHTML = h;
+    D.classList.add('on');
   },
 };
 

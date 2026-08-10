@@ -260,16 +260,31 @@ spawner change.
 
 ## The input contract
 
-Everything the player does reaches the game through four semantic events, and nothing below
-that line knows what produced them:
+Everything the player does reaches the game through a handful of semantic events, and nothing
+below that line knows what produced them:
 
 ```
-laneChange(direction)        -1 | +1
-jump() / jumpHold(bool)      a real jump, fired at takeoff
-repProgress(kind, phase)     0..1, continuously, while a rep is happening
-repCompleted(kind, form)     form 0..1
-trackingState(state)         'good' | 'degraded' | 'lost'
+laneChange(direction)          -1 | +1
+jump() / jumpHold(bool)        a real jump, fired at takeoff
+poseLive(kind, phase, weight)  the body is moving; drives the penguin and nothing else
+repProgress(kind, phase)       0..1, continuously, while a rep is happening
+repCompleted(kind, form)       form 0..1
+repRejected(kind, reason)      that was not a rep, and here is why
+trackingState(state)           'good' | 'degraded' | 'lost'
 ```
+
+**A refused rep has to say so.** `repRejected` carries the string the detector already produced —
+`ALL THE WAY DOWN`, `PAUSE AT THE BOTTOM`, `WE LOST YOUR SHOULDERS` — and it is the reason the
+whole contract has a fifth event rather than four. `pose/detector.js` had always called it on the
+sink, and `Signal` is the sink during play, but `Signal` had no such method: the call landed on
+`undefined` and every reason was discarded for the entire game. Only calibration's own sink
+consumed it, so coaching worked while you were being taught the exercises and then went silent.
+
+That silence is the worst failure available, because from either side of the screen it is
+indistinguishable from a broken camera. A player two centimetres short of depth got exactly what a
+player whose camera never loaded got — nothing — and reasonably concluded the tracking was broken.
+The clock-out card now carries the tally as well, so a single screenshot says *which* it was:
+reps counted over reps attempted, and the three commonest reasons with counts.
 
 **Jumping is a jump.** Leave the floor and the penguin leaves the belt — which matters, because
 coins arc so you have to jump for them and a ground-down wall stub can be hopped. It fires at
@@ -327,6 +342,43 @@ player completing a rep every 0.5s stays eased for 13.3 of 14 seconds. Flail for
 without finishing one and the belt resumes and the wall arrives, which is the fail condition the
 design already wanted rather than a silent stall with no way out. `stall.mjs` (20 assertions)
 covers both halves.
+
+### What a push-up actually needs to see
+
+Nothing below the hips. `pushDepth` is shoulder height above the **planted hands**, in shoulder
+widths, and no part of the push-up path reads a knee or an ankle angle. So the whole lower body can
+be out of frame, and **knee push-ups count** — measured at `torsoHoriz` 33.6° against a 46° gate,
+5 of 5 reps uncalibrated across three camera placements. `kneepush.mjs` (30 assertions) ablates the
+landmarks one group at a time and states the result plainly:
+
+```
+hide both ankles              reps 5/5
+hide both knees               reps 5/5
+hide the entire lower body    reps 5/5
+hide legs AND both elbows     reps 5/5
+hide legs AND both hips       reps 0/5
+```
+
+Three things are load-bearing, and the last row is why the **hips** are among them: `torsoHoriz` is
+the shoulder-to-hip vector, and it is the only thing separating a push-up from arms moving while
+upright. Without it, six jumping jacks counted as six push-ups — arms overhead drive `pushDepth`
+negative, so a jack read as prone and its arm swing crossed both depth thresholds. `pushDepth`
+measures depth *within* a prone rep; it cannot tell prone from standing, and asking it to was the
+bug. The wrists are the third: no hands, no ruler.
+
+**The elbows are not load-bearing, and used to be.** `pushup.js` documents elbow evidence as a
+bonus a rep is not penalised for lacking, but `ELBOW_L/R` sat in `NEEDS.pushup`, which is a hard
+tracking gate — so an elbow the model could not see refused *every* rep rather than costing a
+little form score. From a floor camera the forearm points almost straight down the depth axis, the
+worst-estimated axis in monocular pose, making that the common case rather than a corner case. The
+elbows now have their own visibility group, and `elbowLegible` reads *that* instead of the group
+minimum: with the elbows hidden, `visMin.pushupElbow` is 0.12 while `visMin.pushup` stays 0.96.
+
+That second half matters as much as the first. Leaving `elbowLegible` pointed at `NEEDS.pushup`
+after removing the elbows from it would have quietly inverted its meaning — it would report a
+legible elbow whenever the shoulders, hips and wrists were clear, then read an angle off a landmark
+the model was guessing at. A bonus that fires on a guess is worse than no bonus, because it lands
+in the form score as though it were evidence.
 
 ## Workout mode
 

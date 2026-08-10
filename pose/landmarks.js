@@ -60,8 +60,21 @@ export const NEEDS = {
            LM.ANKLE_L, LM.ANKLE_R, LM.HIP_L, LM.HIP_R],
   lunge:  [LM.HIP_L, LM.HIP_R, LM.ANKLE_L, LM.ANKLE_R, LM.KNEE_L, LM.KNEE_R,
            LM.SHOULDER_L, LM.SHOULDER_R],
+  /* Shoulders, hips and wrists — and deliberately NOT the elbows. This list is a hard
+     tracking gate: anything in it that the model cannot see stops reps being counted at all.
+     pushup.js treats elbow evidence as a bonus that a rep is not penalised for lacking, so
+     putting the elbows in here contradicted it — an elbow lost to the depth axis refused
+     every rep instead of costing a little form score. From a floor camera the forearm points
+     almost straight down that axis, which is the worst-estimated one in monocular pose, so
+     that was the common case rather than a corner case.
+     The elbows get their own group below, and the only thing that reads it is the check for
+     whether the elbow angle is worth believing.
+     No leg landmark appears here because no leg landmark is used: `pushDepth` measures the
+     shoulders against the planted hands, so the whole lower body can be out of frame or
+     folded up on the knees and the rep still counts. */
   pushup: [LM.SHOULDER_L, LM.SHOULDER_R, LM.HIP_L, LM.HIP_R,
-           LM.ELBOW_L, LM.ELBOW_R, LM.WRIST_L, LM.WRIST_R],
+           LM.WRIST_L, LM.WRIST_R],
+  pushupElbow: [LM.ELBOW_L, LM.ELBOW_R],
   burpee: [LM.SHOULDER_L, LM.SHOULDER_R, LM.HIP_L, LM.HIP_R,
            LM.KNEE_L, LM.KNEE_R, LM.ANKLE_L, LM.ANKLE_R, LM.WRIST_L, LM.WRIST_R],
   frame:  [LM.ANKLE_L, LM.ANKLE_R, LM.WRIST_L, LM.WRIST_R, LM.HIP_L, LM.HIP_R, LM.NOSE],

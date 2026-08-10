@@ -68,8 +68,10 @@ export function makeBody(){
        which used to require calibration and therefore could not happen on a first run. */
     jumpRise:0,
     /* per-exercise confidence */
-    vis:{ squat:0, jack:0, lunge:0, pushup:0, burpee:0, frame:0 },
-    visMin:{ squat:0, jack:0, lunge:0, pushup:0, burpee:0, frame:0 },
+    /* `pushupElbow` is not an exercise — it is the push-up's optional elbow evidence, kept in
+       its own group so that losing it costs form score instead of refusing the rep */
+    vis:{ squat:0, jack:0, lunge:0, pushup:0, burpee:0, frame:0, pushupElbow:0 },
+    visMin:{ squat:0, jack:0, lunge:0, pushup:0, burpee:0, frame:0, pushupElbow:0 },
     /* scratch, so nothing allocates */
     _sh:{x:0,y:0,z:0}, _hp:{x:0,y:0,z:0}, _an:{x:0,y:0,z:0},
   };
@@ -150,7 +152,7 @@ export function readBody(body, frame, cal){
   body.ankleRise = cal && cal.ready ? (an.y - cal.standAnkleY)/Lg : 0;
 
   /* --- confidence, per exercise, over only the landmarks that exercise needs --- */
-  for (const k of ['squat','jack','lunge','pushup','burpee','frame']){
+  for (const k of ['squat','jack','lunge','pushup','burpee','frame','pushupElbow']){
     body.vis[k]    = visOf(frame, NEEDS[k]);
     body.visMin[k] = minVisOf(frame, NEEDS[k]);
   }
