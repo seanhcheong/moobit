@@ -357,6 +357,11 @@
       <div class="lbl" style="margin-bottom:6px">Settings</div>
       <div class="row"><span>Camera control</span><div class="toggle" id="tgCam" data-on="0"></div></div>
       <div class="row"><span>3-lane fitness run</span><div class="toggle" id="tgLanes" data-on="1"></div></div>
+      <div class="row"><span>Exercises</span>
+        <div class="seg" id="segMode">
+          <div data-v="mixed" data-on="1">MIXED</div><div data-v="legs">LEGS</div>
+        </div>
+      </div>
       <div class="row"><span>Auto-run</span><div class="toggle" id="tgAuto" data-on="0"></div></div>
       <div class="row"><span>Sound</span><div class="toggle" id="tgSound" data-on="1"></div></div>
       <div class="row"><span>Shake</span><div class="toggle" id="tgShake" data-on="1"></div></div>
@@ -1527,6 +1532,65 @@ const EX_SHORT  = ['SQUAT', 'PUSH-UP', 'JUMPING JACK', 'BURPEE', 'LUNGE L', 'LUN
 const EX_PERIOD = [1.70, 1.55, 0.95, 3.30, 0.30, 0.30];   // seconds per rep at tempo 1.0
 const EX_COLOR  = [C.sun, C.blossom, C.mint, C.ember, C.steel, C.steel];
 const PRONE_LIFT = 0.50;                            // body half-width, near enough
+
+/* =====================================================================================
+   EXERCISE MODES — which exercises a run is allowed to ask for.
+
+   A mode is a POOL, not a fork. Everything downstream already takes the exercise as a parameter:
+   the wall carries `kind`, `Det.setWant` follows the wall, rep pacing is per-kind, and the HUD
+   reads `EX_SHORT[kind]`. So restricting the game to squats is one array, not a second code path,
+   and adding a mode later costs one more entry.
+
+   Jumping is deliberately absent from every pool, and that is not an omission. A jump is a
+   MOVEMENT CONTROL, not a rep: `Signal.jump()` clears obstacles and reaches coins and never
+   damages a wall. So it is always available in every mode and has nothing to do with this table.
+   The LEGS pool being a single exercise is the point — it is what a HIIT squat session is.
+
+   Lunges are absent for the same kind of reason: they are the pose backend's lane change, never
+   something a wall demands. See `calOrder()` for why calibration still has to include one. */
+const MODES = {
+  mixed: { label:'MIXED', sub:'squats · push-ups · jacks · burpees',
+           pool:[0, 1, 2, 3] },
+  legs:  { label:'LEGS',  sub:'squats and jumping only',
+           pool:[0] },
+};
+const Mode = {
+  get cur(){ return MODES[Settings.mode] || MODES.mixed; },
+  pool(){ return this.cur.pool; },
+  has(kind){ return this.cur.pool.indexOf(kind) >= 0; },
+  label(){ return this.cur.label; },
+  pickEx(){ const p = this.cur.pool; return p[Math.floor(rnd()*p.length)]; },
+  /* Which exercises calibration must teach. The pool, plus a lunge whenever the three-lane run is
+     on — because the lunge is how a camera changes lane, and it needs `cal.lungeFullSpan` to fire
+     at all. Calibrating only the pool would silently cost pose players their steering in LEGS. */
+  calOrder(){
+    const o = this.cur.pool.slice();
+    if (Run.lanes) o.push(5);            // LUNGE_R; the machine is symmetric, one side is enough
+    return o;
+  },
+  /* Changing mode mid-run can leave a wall in flight demanding an exercise the mode no longer
+     contains, which is the same unfairness as showing a camera player an obstacle only a keyboard
+     can answer — so retire those, the way `retireUnanswerable` retires those.
+
+     RESOLVING THE ROUND IS NOT OPTIONAL. `Session.wallResolved()` is what moves the phase to
+     `rest` and sets the next wall's distance; a wall that vanishes without it leaves a HIIT
+     session waiting forever for a round that no longer exists. That is the same defect shape the
+     adversarial audit found six of, and it is invisible in endless mode, which is exactly why it
+     would have shipped. */
+  retireOffPool(){
+    let n = 0;
+    for (let i=Walls.active.length-1;i>=0;i--){
+      const w = Walls.active[i];
+      if (this.has(w.kind)) continue;
+      if (!w.counted){ w.counted = true; Session.wallResolved(); }
+      w.alive = false; w.root.visible = false; w.chip = 0;
+      if (Walls.chipOwner === w) Walls.chipOwner = null;
+      Walls.active.splice(i,1);
+      n++;
+    }
+    return n;
+  },
+};
 
 /* one channel set; three preallocated so burpees can blend between sub-poses */
 function mkEx(){ return { bodyY:0, pitch:0, roll:0, hipX:0, hipZ:0, asymHip:0, footX:0,
@@ -3173,7 +3237,7 @@ const Walls = {
        a burpee costs about three squats, so an interval of equal work is a different rep count per
        kind. `afford` is how many the runway can guarantee; the wall asks for the smaller of what
        the interval wants and what the geometry allows. */
-    const kind = rndI(0,3);
+    const kind = Mode.pickEx();
     const perRep = (Session.hiit ? Session.secFor(kind) : RN.repDurBody) + RN.repGap;
     const afford = Math.floor((lead - RN.wallLead)/Math.max(0.1, perRep*RN.repSlack));
     const need = Session.repsFor(kind, afford);
@@ -3536,9 +3600,18 @@ const Cam3 = {
     Signal.trackingState(TRACK.GOOD);       // never leave the world frozen behind us
   },
 
+  /* Teach the exercises this mode will actually ask for, plus a lunge if lanes are on. Called
+     whenever the mode changes as well as at the start of calibration, so switching to LEGS between
+     runs does not leave a stale five-exercise sequence queued up. */
+  syncCalOrder(){
+    if (!this.ready || !this.cal) return;
+    if (this.Cal.setExOrder) this.Cal.setExOrder(this.cal, Mode.calOrder());
+  },
+
   beginCalibration(){
     if (!this.ready) return;
     this.Cal.begin(this.cal);
+    this.syncCalOrder();                     /* after begin(): reset() clears exIdx, not exOrder */
     Game.pause(true);                        // the run waits; nobody calibrates mid-sprint
     /* seed with the real first instruction, not an empty string — an empty frame between
        WARMING UP and the first guidance reads as a blink */
@@ -4449,6 +4522,10 @@ const Settings = { auto:false, sound:true, shake:true, lanes:true, camera:false,
   /* hiit false is the endless arcade run; true is the bounded workout. `level` sets the work:rest
      ratio and the round count — it is not a difficulty slider on the game, only on the workout. */
   hiit:true, level:'medium',
+  /* which exercises walls may ask for — see MODES. Not a difficulty setting: LEGS is not easier
+     than MIXED, it is narrower, and it exists so the two most reliably detected movements can be
+     played on their own while the others are still being worked on. */
+  mode:'mixed',
   quality: (inputMode==='touch') ? 3 : 2 };
 
 const TWEEN = [];
@@ -4555,10 +4632,29 @@ const UI = {
       Cam3.disable(); UI.setToggle($('tgCam'), false); Game.pause(false); });
     tg($('tgLanes'),'lanes',(v)=>{ Run.lanes = v; UI.refreshHints();
       UI.moves(v && Game.state==='play');
+      /* the lunge is only worth calibrating when lanes exist, so this changes the list too */
+      Cam3.syncCalOrder();
       if (!v){ UI.moves(false); this._cueOn=false; this.cue.classList.remove('on'); } });
     tg($('tgAuto'),'auto');
     tg($('tgSound'),'sound',(v)=>Sfx.setOn(v));
     tg($('tgShake'),'shake');
+    /* Exercise mode. Live mid-run like the lanes toggle, because being able to switch without
+       restarting is how you actually compare them. Two consequences have to be handled, not
+       assumed away: a wall already in flight may demand an exercise the new mode does not
+       contain, and calibration was taught a different set of exercises than the one now in play. */
+    const segM = $('segMode');
+    for (const child of segM.children){
+      child.dataset.on = (child.dataset.v === Settings.mode) ? '1':'0';
+      child.addEventListener('click',(e)=>{
+        e.stopPropagation(); unfocus(e);
+        if (child.dataset.v === Settings.mode) return;
+        Settings.mode = child.dataset.v;
+        for (const c2 of segM.children) c2.dataset.on = (c2===child)?'1':'0';
+        Mode.retireOffPool();
+        Cam3.syncCalOrder();
+        UI.refreshHints();
+      });
+    }
     const seg = $('segQ');
     for (const child of seg.children){
       child.dataset.on = (+child.dataset.v === Settings.quality) ? '1':'0';
@@ -5483,6 +5579,7 @@ window.BR = { TUNING, LIVE, P, Belt, Game, In, Score, Quality, DBG, Post, PLAY, 
   simulate, updatePlayArea, stepPlayer, doJump, startDive, startRagdoll, spawnPattern, spawnZBase, getObstacle, PATTERNS, defNeedsDive, patternNeedsDive, retireUnanswerable,
   curPose, prevPose, FIXED, Ex, exPose, EX_NAMES, EX_SHORT, UI, TEX, world,
   Run, Coins, Walls, Moves, MOVE, Signal, RepDrive, TRACK, IS_LUNGE, beltDragNow, Cam3, Session,
+  MODES, Mode,
   haltRender(v){ renderHalted = !!v; lastT = 0; acc = 0; },
   applyPoseNow(){ applyPose(renderPose, 1/60); },
   /* headless-test driver: advance the fixed-step simulation without waiting on rAF */

@@ -62,6 +62,19 @@ export function create(){
   };
 }
 
+/* Which exercises to teach, chosen by the game rather than fixed here — a run restricted to
+   squats should not make the player perform a calibration burpee for a wall that will never ask
+   for one. `reset()` deliberately does not touch `exOrder`, so a mode set before calibration
+   survives into it; this is the only thing that should ever change the list.
+   Empty or missing input falls back to the full set rather than to nothing, because a calibration
+   that teaches no exercises would leave every threshold at its population default while claiming
+   to be personal — worse than obviously not having calibrated. */
+export function setExOrder(c, order){
+  c.exOrder = (order && order.length) ? order.slice()
+                                      : [EX.JACK, EX.SQUAT, EX.LUNGE_R, EX.PUSHUP, EX.BURPEE];
+  c.exIdx = 0;
+}
+
 export function begin(c){ c.reset(); c.stage = STAGE.FRAME; }
 
 /* ---- stage 1: framing, with guidance specific enough to act on -------------------------- */

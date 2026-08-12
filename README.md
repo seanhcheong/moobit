@@ -343,6 +343,35 @@ without finishing one and the belt resumes and the wall arrives, which is the fa
 design already wanted rather than a silent stall with no way out. `stall.mjs` (20 assertions)
 covers both halves.
 
+### Exercise modes
+
+**Settings → Exercises** picks which exercises a wall may ask for. `MIXED` is all four; `LEGS` is
+squats only. It is a pool, not a fork — everything downstream already takes the exercise as a
+parameter, so restricting the game is one array rather than a second code path.
+
+**Jumping is in neither pool, and that is not an omission.** A jump is a movement control, not a
+rep: `Signal.jump()` clears obstacles and reaches coins and never damages a wall. So it is always
+available in every mode. `LEGS` being a single-exercise pool is the point — squats and jumping is
+what a HIIT squat session is, and it happens to be the two most reliably detected movements in the
+set while the others are still being validated against real bodies.
+
+Three things the mode has to touch, and the last two are the ones that bite:
+
+- **The wall picker** draws from `Mode.pool()` instead of a hardcoded range.
+- **Calibration teaches the pool, plus a lunge whenever lanes are on.** No wall ever demands a
+  lunge — the lunge is how a *camera* changes lane, and it needs `cal.lungeFullSpan` to fire at
+  all. Calibrating only the pool would silently cost pose players their steering in `LEGS`.
+- **Switching mid-run retires walls that left the pool, and resolves their round.**
+  `Session.wallResolved()` is what advances the phase and sets the next wall's distance, so a wall
+  that simply vanishes leaves a HIIT session waiting forever for a round that no longer exists —
+  the same defect shape the adversarial audit found six of, and invisible in endless mode, which is
+  exactly why it would have shipped.
+
+`mode.mjs` (31 assertions) covers it, including that 24 consecutive `LEGS` walls are all squats,
+that an unknown mode falls back rather than emptying the pool, and that a `LEGS` session actually
+reaches `done`. Mutation-tested three ways — dropping the round resolution, dropping the lunge from
+the calibration order, and reverting the picker — and it catches each.
+
 ### What a push-up actually needs to see
 
 Nothing below the hips. `pushDepth` is shoulder height above the **planted hands**, in shoulder
