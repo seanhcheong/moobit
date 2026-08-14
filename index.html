@@ -210,6 +210,12 @@
   #mvRow span{font-size:9px;letter-spacing:.1em;padding:3px 5px 4px;border-radius:7px;
     background:rgba(255,255,255,.07);color:#7d8783;min-width:26px;text-align:center}
   #mvRow span.lit{background:rgba(63,224,176,.28);color:#bff5e4}
+  /* THREE states, not two: unconfirmed, confirmed-once, and active right now. The middle one is
+     what makes the practice period legible — the player can see which movement the game is still
+     waiting on instead of guessing why the belt has not sped up yet. */
+  #mvRow span.done{color:#8fe0c4;box-shadow:inset 0 0 0 1px rgba(63,224,176,.45)}
+  #cadChip.practice{border-color:rgba(255,214,138,.5)}
+  #cadChip.practice .cadLbl{color:#ffd68a;opacity:.9}
   #mvSteer{font-variant-numeric:tabular-nums;min-width:34px}
   #trackChip{position:absolute;left:50%;top:calc(58px + var(--sat));transform:translateX(-50%);
     padding:6px 15px 7px;border-radius:13px;font-size:12px;letter-spacing:.16em;
@@ -3031,8 +3037,14 @@ const Session = {
      rather than the value latched at start, because the lanes toggle is live mid-run — flipping it
      off used to leave a free run capped at the workout's tier and silently drained of surges. */
   on(){ return this.hiit && Run.lanes; },
-  tierCap(){ return this.on() ? this.cfg().tierCap : 99; },
-  calm(){ return this.on(); },
+  /* Both of these now answer to the free run's practice period as well as to the workout. The belt
+     is the loudest thing in the game, so holding it at its lowest tier is most of what "slow the
+     pace down" means. */
+  tierCap(){
+    const cap = this.on() ? this.cfg().tierCap : 99;
+    return BodyDrive.practice() ? Math.min(cap, 0) : cap;
+  },
+  calm(){ return this.on() || BodyDrive.practice(); },
 
   /* How many reps this wall should ask for. Derived from the work interval and the cost of the
      exercise drawn, then bounded by `afford` — how many the runway can actually guarantee before
@@ -3491,8 +3503,18 @@ const BodyDrive = {
   hipRaw:0, hipX:0, centre:0, haveCentre:false,
   seenT:-99,                   /* s since the last camera frame — see step() */
 
+  /* THE PRACTICE PERIOD. A free run holds the belt at its lowest tier, skips every surge and
+     spawns no obstacles until the player has demonstrated all four inputs once. It clears itself,
+     so it is onboarding rather than a mode: you prove the controls read you, and then the game
+     starts. Anchoring the movement before playing any games is exactly the point — judging a
+     control scheme while the belt is trying to kill you tells you nothing about the controls. */
+  ok4:{ run:false, steer:false, jump:false, duck:false },
   reset(){ this.cad=0; this.thr=0; this.hipRaw=0; this.hipX=0;
-           this.centre=0; this.haveCentre=false; this.seenT=-99; },
+           this.centre=0; this.haveCentre=false; this.seenT=-99;
+           this.ok4.run=false; this.ok4.steer=false; this.ok4.jump=false; this.ok4.duck=false; },
+  /* every input confirmed? `practice()` is what the belt and the spawner read */
+  allOk(){ const k=this.ok4; return k.run && k.steer && k.jump && k.duck; },
+  practice(){ return this.active() && !this.allOk(); },
 
   /* Free run + camera. Lanes on means the lunge owns steering, and `Signal.laneChange` is gated
      on `Run.lanes` anyway, so the two schemes can never both be live. */
@@ -3523,6 +3545,10 @@ const BodyDrive = {
     if (dt > 0) this.hipX += (this.hipRaw - this.hipX)*(1 - Math.exp(-dt/BD.steerTau));
 
     const raw = clamp01((this.cad - BD.cadIdle)/Math.max(0.01, BD.cadFull - BD.cadIdle));
+    /* confirmations: a real pace, and a real step aside. Deliberately above the bare threshold, so
+       noise cannot tick these off on the player's behalf. */
+    if (raw > 0.35) this.ok4.run = true;
+    if (Math.abs(this.ix()) > 0.35) this.ok4.steer = true;
     /* THE REP HOLD. Standing still to perform a rep must not cost the player ground, and the belt
        already answers this exact problem by easing while rep progress arrives. Same mechanic, same
        budget: `Signal.progT` is seconds since the last `repProgress`, and `Belt.effortT` is the
@@ -3664,6 +3690,7 @@ const Signal = {
     this.jumps = (this.jumps||0) + 1;
     /* latch the movement-check indicator: a jump is an EDGE, and one lit frame at 60Hz is invisible */
     UI.flashJump();
+    BodyDrive.ok4.jump = true;
     return true;
   },
   jumpHold(v){ if (this.live()) In.jumpHeld = !!v; },
@@ -3719,6 +3746,7 @@ const Signal = {
   crouch(on){
     const was = this.duck;
     this.duck = !!on;
+    if (this.duck && !was) BodyDrive.ok4.duck = true;
     if (this.duck && !was && this.live() && duckWorthIt()) In.diveEdge = true;
     return true;
   },
@@ -4184,6 +4212,8 @@ function patternNeedsDive(pat){
 
 function trySpawn(dt){
   if (Game.state !== 'play') return;
+  /* nothing to dodge until the player has confirmed they can dodge */
+  if (BodyDrive.practice()){ Spawn.gapLeft = 2.0; return; }
   if (Run.lanes && Walls.busy()){ Spawn.gapLeft = 2.0; return; }   // the wall gets the corridor
   Spawn.gapLeft -= Belt.speed*dt;
   if (Spawn.gapLeft > 0) return;
@@ -5121,6 +5151,18 @@ const UI = {
     /* Steering as a signed percentage of full lateral, so "am I being read as stepping left" has an
        answer the player can watch. `ix()` rather than the raw hip offset, because what matters is
        what the game is acting on after the low-pass and the deadzone. */
+    /* practice state on the panel itself, so "why is the belt still slow" has a visible answer */
+    const pr = BodyDrive.practice();
+    if (this._mvPr !== pr){
+      this._mvPr = pr;
+      c.classList.toggle('practice', pr);
+      this.cadChip.querySelector('.cadLbl').textContent = pr ? 'TRY EACH MOVE' : 'STEPS / MIN';
+    }
+    const K = BodyDrive.ok4;
+    if (this._mvOkS !== K.steer){ this._mvOkS = K.steer; this.mvSteer.classList.toggle('done', K.steer); }
+    if (this._mvOkJ !== K.jump){ this._mvOkJ = K.jump; this.mvJump.classList.toggle('done', K.jump); }
+    if (this._mvOkD !== K.duck){ this._mvOkD = K.duck; this.mvDuck.classList.toggle('done', K.duck); }
+
     const sx = Math.round(BodyDrive.ix()*100);
     if (this._mvSx !== sx){
       this._mvSx = sx;

@@ -392,6 +392,18 @@ Two bugs worth recording, because both were stable-and-wrong rather than obvious
   anyway, and `topSpeed`'s own comment already says it is *"deliberately just under the mid-game belt
   speed"*. Reverted.
 
+#### The practice period
+
+A free run holds the belt at its **lowest tier**, skips every surge and spawns **no obstacles** until
+the player has demonstrated all four inputs once. It clears itself, so it is onboarding rather than a
+mode: prove the controls read you, then the game starts. Judging a control scheme while the belt is
+trying to kill you tells you nothing about the controls.
+
+The panel says `TRY EACH MOVE` while it is armed, and each lamp gains an outline once that movement
+has been confirmed — so "why has the belt not sped up yet" has a visible answer. `practice()` is read
+by `Session.tierCap()`, `Session.calm()` and the obstacle spawner, which were already the right
+seams. A restart re-arms it, because the next player has proved nothing.
+
 #### The movement check
 
 `#cadChip` shows all four inputs at once: steps per minute, the throttle bar, signed steering, and
