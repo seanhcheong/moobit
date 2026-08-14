@@ -33,9 +33,24 @@ export function create(){
   };
 }
 
-/* how far the ankle line has risen above its standing baseline, in leg lengths */
+/* How far the LOWER ankle has risen above its standing baseline, in leg lengths.
+
+   The lower one, not the mean, and that is the whole definition of a jump: BOTH feet leave the
+   floor. The mean cannot express that. Lifting one foot 14cm raises the mean by 7cm, which is
+   indistinguishable from lifting both feet 7cm — measured, a real jump and a body running in place
+   emitted at `jumpRise` 0.077 and 0.074 respectively, so the mean gave the two movements the same
+   number and the detector fired ~2 jumps per second at someone jogging on the spot.
+
+   The minimum has no such ambiguity. Running in place always has a foot down, so the lower ankle
+   sits at its baseline throughout; a jump lifts it by the full jump height. This also leaves a
+   deliberate jump WHILE running in place perfectly detectable, which a gate on alternation would
+   not — in a mode where you run continuously to move, suppressing jumps whenever the legs are
+   alternating would mean never being able to jump at all.
+
+   `burpee.js` reads the published `body.jumpRise` for its finishing hop, and that hop is a genuine
+   two-footed jump, so it gets more specific here rather than less. */
 function riseOf(m, frame, body){
-  const aY = (frame.img[LM.ANKLE_L].y + frame.img[LM.ANKLE_R].y)*0.5;
+  const aY = Math.min(frame.img[LM.ANKLE_L].y, frame.img[LM.ANKLE_R].y);
   if (!m.haveBase){ m.base = aY; m.haveBase = true; }
   return (aY - m.base)/Math.max(1e-4, body.legLen);
 }

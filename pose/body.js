@@ -59,6 +59,19 @@ export function makeBody(){
     pushDepth:1,
     /* lateral, in shoulder widths, screen-relative and signed: + is screen-right */
     hipX:0, ankleLX:0, ankleRX:0, ankleSpan:0,
+    /* alternation: the differential half of "is this body running in place or jumping".
+       `ankleSplit` is instantaneous and signed; `ankleAlt` is its magnitude with a fast attack and
+       a slow decay, which is the form anything gating on it should read. */
+    ankleSplit:0, ankleAlt:0,
+    /* smoothed rate of change of ankleSpan, in shoulder widths per second — how a jumping jack's
+       first hop is told from a jump, when every positional signal reads identically */
+    ankleSpanVel:0, _prevSpan:0,
+    /* published by run.js: steps per second, and whether that is above zero. A rate rather than a
+       count, because what the game wants from running in place is how hard you are working now. */
+    cadence:0, running:false,
+    /* ms since the torso was last nearer horizontal than vertical — how a burpee's finishing hop
+       is told apart from a deliberate jump */
+    msSinceProne:60000,
     /* derived gates */
     wristsAboveShoulders:false, wristsAboveHead:false,
     /* descent from the calibrated standing baseline, in leg lengths (+ = lower) */
@@ -139,12 +152,66 @@ export function readBody(body, frame, cal){
      the camera has their left hand on the screen's right, so we take whichever ankle is
      further screen-left and let the labels look after themselves. --- */
   const S = body.shoulderW;
-  const aL = Math.min(I[LM.ANKLE_L].x, I[LM.ANKLE_R].x);   // screen-left ankle
-  const aR = Math.max(I[LM.ANKLE_L].x, I[LM.ANKLE_R].x);   // screen-right ankle
+  const swap = I[LM.ANKLE_L].x > I[LM.ANKLE_R].x;
+  const AL = swap ? I[LM.ANKLE_R] : I[LM.ANKLE_L];         // screen-left ankle
+  const AR = swap ? I[LM.ANKLE_L] : I[LM.ANKLE_R];         // screen-right ankle
+  const aL = AL.x, aR = AR.x;
   body.hipX     = (hp.x - 0.5)/S;
   body.ankleLX  = (aL - hp.x)/S;                           // negative: out to screen-left
   body.ankleRX  = (aR - hp.x)/S;                           // positive: out to screen-right
   body.ankleSpan = (aR - aL)/S;
+
+  /* --- ALTERNATION: the one signal that separates running in place from a jump or a jack -------
+     Running in place lifts the ankles ALTERNATELY, roughly 180 degrees out of phase. A jump and a
+     jumping jack lift them TOGETHER. That is a differential-versus-common-mode distinction, and
+     the differential half is this:
+
+       ankleSplit   signed height difference between the two ankles, in leg lengths
+
+     Measured on synthetic bodies across three floor-camera placements: running swings +/-0.35
+     while a jump, a jack, a squat and standing still all read 0.00. Not a marginal separation.
+
+     `ankleSplit` alone is not enough to gate on, because it passes through zero twice per step —
+     at a crossover a jump could slip through the gap. `ankleAlt` is the usable form: the magnitude
+     with a fast attack and a slow decay, so it answers "is this body alternating right now"
+     rather than "is one foot higher this instant". The asymmetry is the same idiom pushup.js uses
+     for its plank reference, and the decay is longer than the gap between steps at any plausible
+     cadence (a step at 2.6/s is ~385ms; the decay constant is 700ms).
+
+     The vertical pairing follows this file's screen-relative doctrine rather than the model's own
+     L/R labels, which matters for step counting: a label swap mid-run would read as a phantom
+     step, and screen-left/screen-right is stable for a body facing the camera. --- */
+  const dtS = body.dtMs/1000;
+  body.ankleSplit = (AL.y - AR.y)/body.legLen;
+  const mag = Math.abs(body.ankleSplit);
+  if (dtS <= 0){ body.ankleAlt = Math.max(body.ankleAlt, mag); }
+  else {
+    const tau = mag > body.ankleAlt ? 0.10 : 0.70;
+    body.ankleAlt = body.ankleAlt + (mag - body.ankleAlt)*(1 - Math.exp(-dtS/tau));
+  }
+
+  /* HOW FAST THE FEET ARE FLYING APART, in shoulder widths per second. This is what tells a jumping
+     jack's FIRST hop from a deliberate jump, and nothing else does: at that instant the feet are
+     still together (span 0.808 against a jump's 0.796) and the wrists are not yet above the
+     shoulders, so every position-based test reads the same for both. The rate does not — measured
+     at the emitting frame, a jack spreads at 2.21 and a jump at -0.02.
+
+     Smoothed, because the raw frame-to-frame difference is not usable on a real body: 0.02 of
+     landmark jitter across one frame at 25fps is already 0.5 here, which would sit uncomfortably
+     close to any threshold. A short constant keeps the 2.21 intact while flattening single-frame
+     noise. */
+  if (dtS > 0){
+    const raw = (body.ankleSpan - body._prevSpan)/dtS;
+    body.ankleSpanVel += (raw - body.ankleSpanVel)*(1 - Math.exp(-dtS/0.08));
+  }
+  body._prevSpan = body.ankleSpan;
+
+  /* How long since this body was last on the floor. A burpee ends in a genuine jump, so the only
+     way to tell that hop from a deliberate one is that a burpee has a floor phase just behind it.
+     "Prone" here is a definition rather than a tuning knob — the torso nearer horizontal than
+     vertical — which is why it does not read pushup's `torsoHorizMax`. */
+  body.msSinceProne = body.torsoHoriz < 50 ? 0
+                    : Math.min(60000, body.msSinceProne + body.dtMs);
 
   /* --- descent from the calibrated standing baseline, in leg lengths --- */
   const Lg = body.legLen;

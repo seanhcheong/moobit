@@ -343,6 +343,86 @@ without finishing one and the belt resumes and the wall arrives, which is the fa
 design already wanted rather than a silent stall with no way out. `stall.mjs` (20 assertions)
 covers both halves.
 
+### Running in place, and what "off the ground" means
+
+`pose/run.js` publishes a **rate**, not reps: `body.cadence` in steps per second, plus `ev.step` on
+each footfall. It is the only machine that counts nothing, because what the game wants from running
+in place is how hard you are working right now.
+
+It works because running in place lifts the ankles **alternately** while a jump and a jumping jack
+lift them **together** — a differential-versus-common-mode distinction. `body.ankleSplit` is the
+differential half, and the separation is categorical rather than marginal:
+
+```
+movement            differential   common-mode
+running in place           0.347         0.076
+jumping jacks              0.000         0.132
+a vertical jump            0.000         0.292
+squats                     0.000         0.179
+standing still             0.000         0.000
+```
+
+The geometry finally helps: from a phone on the floor the feet are the nearest and largest
+landmarks, and a foot lifting is in-plane motion — the opposite of the depth-axis problem that makes
+push-up elbows unreadable. Cadence recovers to within **0.0–1.5%** across 1.6 to 3.8 steps/s on
+three camera placements.
+
+Two details that were not obvious:
+
+**Steps are counted by threshold crossings, not zero crossings.** A running foot rests flat for
+roughly half its cycle, so `ankleSplit` sits at exactly 0 for long stretches; a sign-change counter
+misses those steps and trips over `Math.sign(0)`, under-reading every cadence by 15–50%. The
+threshold is a fraction of the signal's *own* amplitude, with a deadband before re-arming.
+
+**Cadence decays out of its own expression, with no timeout branch.** It is `1000/interval` where
+`interval` is the longer of the last real gap and the time since that gap began. Keep a rhythm and
+the second term never matters; stop and the value falls smoothly to zero. That matters because this
+drives the player's position on the belt, and a cliff would read as the treadmill lurching.
+Measured: zero within 1.56s of stopping, largest single-frame step 0.416.
+
+#### "Off the ground" is the LOWER ankle, not the mean
+
+`jump.js` measures the rise of the lower ankle. That is the whole definition of a jump — *both* feet
+leave the floor — and the mean cannot express it. Lifting one foot 14cm raises the mean exactly as
+much as lifting both feet 7cm, so a real jump and a body jogging on the spot emitted at `jumpRise`
+0.077 and 0.074: indistinguishable, and the detector fired about **two jumps per second** at anyone
+running in place.
+
+The minimum has no such ambiguity, and it is why **a deliberate jump while running in place is still
+detected**. A gate on alternation would have been the obvious fix and the wrong one: in a mode where
+you run continuously to move, suppressing jumps whenever the legs alternate means never jumping.
+
+#### Arbitration reads the body, not the wall
+
+The old guard was `d.want === EX.JACK || d.want === EX.BURPEE`. That cannot work in general, because
+exactly one rep machine steps per frame — so the jack machine's state is stale whenever the wall
+wants something else, and a jack *begins* in `CLOSED`, so even the matching case leaked the first hop
+of every rep. Measured, jacks fired 10 spurious jumps per 5 reps above roughly 7cm of hop.
+
+The replacements are body signals, so they hold whatever the wall is asking for. Each threshold comes
+from catching the body state on the exact frames a spurious jump fired:
+
+```
+movement                     ankleSpan   spreadVel   msSinceProne
+a real jump                      0.796       -0.02          60000
+a jumping jack's spread hop      1.326        2.14          60000
+a jumping jack's FIRST hop       0.808        2.14          60000
+a burpee's finishing hop         0.792           -            520
+```
+
+A jack hops with the feet out, or flying apart — `ankleSpanVel` is what catches the first hop, where
+every positional signal reads identically to a jump. A burpee is the only movement that arrives at a
+hop straight off the floor.
+
+Result: running in place and burpees now leak **zero**, and jacks are clean from 2.6cm through 12cm
+of hop. A residual remains at a very vigorous 15.5cm jack, where the lift peaks *before* the feet
+spread so `spreadVel` is not yet high at takeoff — `hoppy.mjs` carries that as a deliberate failure
+rather than hiding it. `LEGS` mode contains neither jacks nor burpees, so it is unaffected.
+
+**Everything above is synthetic-only.** `run.altGate` is the number to check first against a real
+body: those 0.000s are exactly zero because a synthetic body is perfectly symmetric, and a real one
+never is.
+
 ### Exercise modes
 
 **Settings → Exercises** picks which exercises a wall may ask for. `MIXED` is all four; `LEGS` is

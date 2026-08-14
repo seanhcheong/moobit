@@ -108,6 +108,45 @@ export const CONFIG = {
        line down (you moved, or it was mis-seeded) and very slow to follow it up, so it cannot
        creep upward during a jump and swallow the signal */
     baseTrackDown: 0.05, baseTrackUp: 0.004,
+    /* ---- IS THIS HOP A DELIBERATE JUMP? ----------------------------------------------------
+       Decided from the body, not from what the wall happens to be asking for. The old guard read
+       `d.want`, which cannot work in general: exactly one rep machine steps per frame, so the jack
+       machine's state is stale whenever the wall wants something else, and a player doing jacks
+       while a squat wall was up got a spurious jump on every hop.
+
+       Both numbers come from catching the body state on the exact frames a spurious jump fired:
+
+         movement                     ankleSpan   msSinceProne
+         a real jump                      0.796          60000
+         a jumping jack's spread hop      1.326          60000
+         a burpee's finishing hop         0.792            520
+
+       A jack hops with the feet OUT, which is the whole shape of the exercise; a jump does not.
+       And a burpee is the only movement that arrives at a hop straight off the floor. */
+    spreadSpan: 1.15,      // x shoulderWidth between the ankles — wider than this is a jack's hop
+    afterProneMs: 900,     // a hop this soon after lying down is a burpee finishing, not a jump
+    /* And the jack's FIRST hop, where the feet are still together and every positional signal
+       reads the same as a jump's. Measured at the emitting frame: a jack spreads at 2.21 shoulder
+       widths per second, a jump at -0.02. The gate sits far from both. */
+    spreadVel: 0.8,        // x shoulderWidth per second — feet flying apart, so this is a jack
+  },
+
+  /* ---- running in place: a RATE, not reps -------------------------------------------------
+     Every threshold here is relative to the signal's own amplitude, for the same reason the rest of
+     this file is: how far a foot appears to lift depends on the person, their effort and where the
+     phone is sitting. See pose/run.js for the measurements these come from. */
+  run: {
+    minSplit: 0.03,        // floor on the step threshold, x legLength — stops noise counting
+    thFrac: 0.50,          // step threshold as a fraction of `ankleAlt` (≈25% of peak-to-peak)
+    rearmFrac: 0.40,       // fall back inside this fraction of the threshold to arm that side again
+    minStepMs: 140,        // ~7 steps/s ceiling; faster is jitter, not footwork
+    maxStepMs: 1200,       // no step for this long and you have stopped running
+    cadTau: 0.22,          // s — smoothing on the reported cadence, so it drives without chatter
+    /* Below this much alternation there is no running at all. Synthetic non-running movements all
+       read exactly 0.000 because a synthetic body is symmetric; a real one is not, so THIS IS THE
+       FIRST NUMBER TO CHECK AGAINST A REAL BODY. Running measured 0.107 at a 9cm knee lift and
+       0.180 at 14cm, so there is room, but the floor of that range is only ~2x this gate. */
+    altGate: 0.045,
   },
 
   /* ---- 1: push-up — the hard one ----------------------------------------------------- */

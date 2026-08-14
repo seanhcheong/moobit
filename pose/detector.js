@@ -22,6 +22,7 @@ import * as Pushup from './pushup.js';
 import * as Burpee from './burpee.js';
 import * as Lunge from './lunge.js';
 import * as Jump from './jump.js';
+import * as Run from './run.js';
 
 export const TRACK = { GOOD:'good', DEGRADED:'degraded', LOST:'lost' };
 
@@ -48,6 +49,7 @@ export function create(){
     },
     lunge: Lunge.create(),
     jumpM: Jump.create(),
+    runM:  Run.create(),
     want: EX.JACK,              // which exercise the wall in front is asking for
     track: TRACK.GOOD,
     lastFrameT: -1e9, pushT: -1e9,
@@ -55,8 +57,10 @@ export function create(){
     lostT: 0, foundT: 0,
     /* reused every frame; the event surface allocates nothing */
     ev: { progress:false, phase:0, completed:false, form:1, reject:'', lane:0,
-          jump:false, jumpHold:null, live:false, liveU:0, liveW:0 },
-    stats: { frames:0, progress:0, completed:0, rejected:0, lanes:0, lost:0, jumps:0, live:0 },
+          jump:false, jumpHold:null, live:false, liveU:0, liveW:0,
+          /* running in place publishes a RATE every frame, and `step` only on a footfall */
+          cadence:0, step:false },
+    stats: { frames:0, progress:0, completed:0, rejected:0, lanes:0, lost:0, jumps:0, live:0, steps:0 },
   };
 }
 
@@ -128,6 +132,7 @@ export function push(d, res, tMs, sink){
   ev.progress = false; ev.phase = 0; ev.completed = false; ev.form = 1;
   ev.reject = ''; ev.lane = 0; ev.jump = false; ev.jumpHold = null;
   ev.live = false; ev.liveU = 0; ev.liveW = 0;
+  ev.step = false;   /* ev.cadence is a level, not an edge, so it is NOT cleared here */
 
   adapt(d.frame, res, tMs);
   if (d.frame.valid) d.lastFrameT = tMs;
@@ -156,14 +161,29 @@ export function push(d, res, tMs, sink){
   if (track === TRACK.LOST || !d.frame.valid){
     /* freeze everything rather than reasoning about a body we cannot see */
     for (const k in d.mach) d.mach[k].reset();
-    d.lunge.reset(); d.jumpM.reset();
+    d.lunge.reset(); d.jumpM.reset(); d.runM.reset();
+    /* a stale cadence would keep driving the player forward while the camera cannot see them,
+       which is the one failure worth being explicit about on this path */
+    d.body.cadence = 0; d.body.running = false; ev.cadence = 0;
     return ev;
   }
 
   readBody(d.body, d.frame, d.cal);
   if (!d.body.valid) return ev;
 
-  /* the lane control is always live */
+  /* THE CONTROLS ARE ALWAYS LIVE — lane changes, jumping, and running in place. None of them is
+     a rep, none of them is gated on what the wall is asking for, and the player needs all three at
+     any moment. Only the REP machines are exclusive.
+
+     Running goes first because the jump arbitration below reads the same two ankles, and because
+     `body.cadence` should be settled before anything downstream looks at it. */
+  Run.step(d.runM, d.body, d.cal, ev);
+  if (ev.step){
+    d.stats.steps++;
+    if (sink && sink.step) sink.step(d.runM.cadence);
+  }
+  if (sink && sink.cadence) sink.cadence(d.runM.cadence);
+
   Lunge.step(d.lunge, d.body, d.cal, ev);
   if (ev.lane !== 0){
     d.stats.lanes++;
@@ -182,7 +202,20 @@ export function push(d, res, tMs, sink){
   const midRep = hoppy && d.mach[d.want] &&
                  d.mach[d.want].state !== 'IDLE' && d.mach[d.want].state !== 'CLOSED' &&
                  d.mach[d.want].state !== 'STAND';
-  Jump.step(d.jumpM, d.frame, d.body, d.cal, ev, !midRep);
+  /* `midRep` is right when it fires and structurally cannot fire often enough: exactly one rep
+     machine steps per frame (see below), so the jack machine's state is stale whenever the wall
+     wants something else — and a jack BEGINS in CLOSED, so even the wanted case leaks the first hop
+     of every rep. Both holes are the same mistake, which is deciding from INTENT rather than from
+     the body. These two read the body and so hold whatever the wall is asking for.
+     Running in place needs no gate here at all: `jump.js` measures the LOWER ankle, so a movement
+     that always keeps a foot down never looks airborne in the first place. That is what leaves a
+     deliberate jump mid-run still detectable. */
+  const B = d.body;
+  const spreadFooted = B.ankleSpan > CONFIG.jump.spreadSpan ||
+                       B.ankleSpanVel > CONFIG.jump.spreadVel;
+  const justOnFloor  = B.msSinceProne < CONFIG.jump.afterProneMs;
+  Jump.step(d.jumpM, d.frame, d.body, d.cal, ev,
+            !midRep && !spreadFooted && !justOnFloor);
   if (ev.jump){
     d.stats.jumps++;
     if (sink && sink.jump) sink.jump();
