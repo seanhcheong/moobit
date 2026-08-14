@@ -183,6 +183,23 @@
     border:1px solid rgba(255,255,255,.16);color:#e8ece9;backdrop-filter:blur(6px)}
   #roundChip.on{display:block}
   #roundChip.rest{border-color:rgba(120,220,200,.5);color:#a8ead9}
+  /* CADENCE, for the free run. Deliberately large: the player reading this is standing 2.5m from
+     the phone, where a 13px chip subtends about 2 arcminutes and is a grey smudge rather than text.
+     Two or three digits is also all that fits at a legible size — the whole screen is only ~89
+     arcminutes wide from there — which is exactly why this is a number and not a sentence.
+     It exists because without it, running in place and the game not seeing you look identical. */
+  #cadChip{position:absolute;left:calc(14px + var(--sal));top:calc(178px + var(--sat));
+    display:none;padding:6px 14px 8px;border-radius:16px;text-align:center;
+    background:rgba(12,16,18,.62);border:1px solid rgba(255,255,255,.16);
+    backdrop-filter:blur(6px);z-index:6}
+  #cadChip.on{display:block}
+  #cadChip .cadLbl{font-size:9px;letter-spacing:.18em;opacity:.6;margin-bottom:1px}
+  #cadNum{font-size:46px;line-height:.92;color:var(--mint);font-variant-numeric:tabular-nums}
+  #cadChip.idle #cadNum{color:#8f9a96}
+  #cadBar{width:74px;height:5px;margin:4px auto 0;border-radius:3px;
+    background:rgba(255,255,255,.16);overflow:hidden}
+  #cadFill{height:100%;width:0%;background:var(--mint);border-radius:3px;
+    transition:width .09s linear}
   #trackChip{position:absolute;left:50%;top:calc(58px + var(--sat));transform:translateX(-50%);
     padding:6px 15px 7px;border-radius:13px;font-size:12px;letter-spacing:.16em;
     background:rgba(16,22,38,.76);border:2px solid rgba(255,255,255,.18);opacity:0;
@@ -260,6 +277,8 @@
     <div id="coinBox" class="panel"><span class="lbl">Coins</span><span id="coins" class="num">0</span></div>
 
     <div id="roundChip">ROUND 1/10</div>
+    <div id="cadChip"><div class="cadLbl">STEPS / MIN</div><div id="cadNum" class="num">0</div>
+      <div id="cadBar"><div id="cadFill"></div></div></div>
 
     <div id="wallCue">
       <div id="wallEx" class="num">SQUAT</div>
@@ -4734,6 +4753,7 @@ const UI = {
     this.cue=$('wallCue'); this.wallEx=$('wallEx'); this.wallReps=$('wallReps');
     this.arc=$('wallArc'); this.arcCtx=this.arc.getContext('2d');
     this.trackChip=$('trackChip'); this.rejectMsg=$('rejectMsg'); this.roundChip=$('roundChip');
+    this.cadChip=$('cadChip'); this.cadNum=$('cadNum'); this.cadFill=$('cadFill');
     this._cueOn=false; this._cueKind=-1; this._cueLeft=-1; this._coins=-1;
     this._arcW=-1; this._track=''; this._rejectT=0;
     const wrap=$('popWrap');
@@ -4751,7 +4771,13 @@ const UI = {
         ? 'TAP LEFT / RIGHT — lunge to change lane<br>BUTTONS — do the exercise on the wall'
         : '<kbd>A</kbd><kbd>D</kbd> lunge lanes &nbsp; <kbd>S</kbd> squat &nbsp; <kbd>X</kbd> push-up<br>' +
           '<kbd>W</kbd> jumping jack &nbsp; <kbd>C</kbd> burpee &nbsp; <kbd>SPACE</kbd> jump &nbsp; <kbd>R</kbd> restart')
-      : (touch
+      : (BodyDrive.active()
+        /* Free run WITH a camera is a different control scheme entirely, and "turn off the lanes to
+           get whole-body control" is not something anybody would guess from a toggle labelled
+           3-lane fitness run. Say it. */
+        ? 'RUN IN PLACE to move &nbsp;·&nbsp; STEP LEFT / RIGHT to steer<br>' +
+          'SQUAT at the walls &nbsp;·&nbsp; JUMP to clear obstacles'
+        : touch
         ? 'LEFT SIDE — drag to steer<br>RIGHT SIDE — tap to jump, swipe to dive'
         : '<kbd>W A S D</kbd> / <kbd>↑←↓→</kbd> move &nbsp; <kbd>SPACE</kbd> jump<br><kbd>SHIFT</kbd> or <kbd>CLICK</kbd> dive &nbsp; <kbd>R</kbd> restart');
     this.hint.innerHTML = lanes
@@ -4880,6 +4906,7 @@ const UI = {
   },
   update(dt){
     this.round();
+    this.cadence();
     /* score counts up, never snaps */
     const tot = Score.total();
     Score.shown = damp(Score.shown, tot, 8.5, dt);
@@ -4929,6 +4956,29 @@ const UI = {
       $('calSub').innerHTML = sub || '&nbsp;'; }
     const p = Math.round(clamp01(prog||0)*100);
     if (this._calProg !== p){ this._calProg = p; $('calBar').style.width = p + '%'; }
+  },
+  /* CADENCE, for the free run, and the only reason the mode is testable. Without it, "I am running
+     and nothing is happening" and "the detector cannot see my feet" look exactly the same from where
+     the player is standing — the same silence that made rejected reps unreadable.
+     Reported in steps per minute rather than per second because that is the unit every treadmill and
+     running watch uses, so the number means something before it is explained. Only written when the
+     displayed value actually changes, so it cannot strobe at inference rate. */
+  cadence(){
+    const c = this.cadChip;
+    if (!c) return;
+    const on = BodyDrive.active();
+    if (this._cadOn !== on){ this._cadOn = on; c.classList.toggle('on', on); }
+    if (!on) return;
+    const spm = Math.round(BodyDrive.cad*60);
+    if (this._spm !== spm){
+      this._spm = spm;
+      this.cadNum.textContent = String(spm);
+      c.classList.toggle('idle', spm === 0);
+    }
+    /* the bar reads the THROTTLE, not the cadence, so it shows what the game is actually giving you
+       — including the hold through a rep, which is the one moment the two disagree on purpose */
+    const w = Math.round(clamp01(BodyDrive.thr)*100);
+    if (this._cadW !== w){ this._cadW = w; this.cadFill.style.width = w + '%'; }
   },
   /* which interval you are in. Only changes on a real transition, so the text never strobes. */
   round(){
