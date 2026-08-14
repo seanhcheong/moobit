@@ -190,6 +190,12 @@ export function push(d, res, tMs, sink){
      standing rather than by a gesture, so this is the raw offset and the game decides what centre
      it is relative to — the detector has no business knowing how wide the play area is. */
   if (sink && sink.steer) sink.steer(d.body.hipX);
+  /* run direction: the shoulder ratio against the calibrated square-on width, plus the nose side.
+     Both raw — the game owns the smoothing and the deadzone, as it does for `hipX`. */
+  if (sink && sink.turn){
+    const sq = d.cal && d.cal.swSquare > 0 ? d.cal.swSquare : 0;
+    sink.turn(sq > 0 ? d.body.shoulderW/sq : 1, d.body.noseOff);
+  }
 
   /* The crouch is a level rather than an edge, and it is published every frame including through a
      dropout, so the game always knows whether the player is currently down. */

@@ -36,7 +36,31 @@ import { median } from './body.js';
 
 const K = CONFIG.calib;
 
-export const STAGE = { IDLE:'idle', FRAME:'frame', APOSE:'apose', REPS:'reps', DONE:'done' };
+export const STAGE = { IDLE:'idle', FRAME:'frame', APOSE:'apose',
+                       MOVE:'move', REPS:'reps', DONE:'done' };
+
+/* ---- THE ACCLIMATION STAGE ----------------------------------------------------------------
+   The free run is driven by four controls rather than by reps, and every threshold behind them was
+   a population guess. This stage asks for each one and fits it, which is the same argument the REPS
+   stage already makes for the exercises: a textbook number is wrong twice over, once for the body
+   and once for the estimator.
+
+   The turn step is the one that justifies the whole stage. Run-direction steering reads shoulder
+   foreshortening against the player's own square-on width — measured, a 15 degree turn gives a
+   shoulder ratio of 0.955 while a head-only turn leaves it at exactly 1.000, which is what makes the
+   signal usable at all — and how far a particular person turns while jogging on the spot is not
+   something worth guessing at.
+
+   Square-on needs no step of its own: the A-pose is already square-on and already medians the
+   shoulder width over 30 frames, so `cal.shoulderW` IS the baseline. */
+export const MOVE_STEPS = ['run', 'turn', 'jump', 'crouch'];
+
+export const MOVE_PROMPT = {
+  run:    ['RUN IN PLACE', 'a pace you could hold for a few minutes'],
+  turn:   ['TURN LEFT, THEN RIGHT', 'keep jogging — turn as if rounding a corner'],
+  jump:   ['JUMP', 'both feet off the floor'],
+  crouch: ['CROUCH', 'as low as you would go to duck under something'],
+};
 
 export function create(){
   return {
@@ -49,12 +73,15 @@ export function create(){
     obs: {},
     exOrder: [EX.JACK, EX.SQUAT, EX.LUNGE_R, EX.PUSHUP, EX.BURPEE],
     exIdx: 0,
+    /* the acclimation stage: which controls to teach, where we are, and what has been seen */
+    mvOrder: [], mvIdx: 0, mv: null, mvHeldMs: 0,
     /* rolling rejection tracking, for auto-offering a recalibration later */
     recent: [], recentT: 0,
     reset(){
       this.stage = STAGE.IDLE; this.cal = defaultCalibration();
       this.frameHeldMs = 0; this.guidance = ''; this.guideT = 0; this.frameOk = false;
       this.exIdx = 0;
+      this.mvIdx = 0; this.mv = null; this.mvHeldMs = 0;
       for (const k in this.samples) this.samples[k].length = 0;
       this.obs = {};
       this.recent.length = 0; this.recentT = 0;
@@ -73,6 +100,13 @@ export function setExOrder(c, order){
   c.exOrder = (order && order.length) ? order.slice()
                                       : [EX.JACK, EX.SQUAT, EX.LUNGE_R, EX.PUSHUP, EX.BURPEE];
   c.exIdx = 0;
+}
+
+/* Which controls to acclimate. An empty list skips the stage entirely, which is what lane mode
+   wants — it steers by lunging and has no cadence, so there is nothing to teach. */
+export function setMoveOrder(c, order){
+  c.mvOrder = (order && order.length) ? order.slice() : [];
+  c.mvIdx = 0; c.mv = null;
 }
 
 export function begin(c){ c.reset(); c.stage = STAGE.FRAME; }
@@ -152,10 +186,22 @@ export function step(c, frame, body, ev){
       cal.standAnkleY    = median(c.samples.ankleY);
       cal.standShoulderY = median(c.samples.shoulderY);
       cal.standStanceHalf = median(c.samples.stance);
-      c.stage = STAGE.REPS; c.exIdx = 0;
-      c.guidance = '';
-      startEx(c, c.exOrder[0]);
+      /* acclimate the CONTROLS before the exercises, when there are any to teach. The controls are
+         what the player will be using every second; the reps only matter when a wall arrives. */
+      if (c.mvOrder.length){
+        c.stage = STAGE.MOVE; c.mvIdx = 0; c.guidance = '';
+        startMove(c);
+      } else {
+        c.stage = STAGE.REPS; c.exIdx = 0;
+        c.guidance = '';
+        startEx(c, c.exOrder[0]);
+      }
     }
+    return;
+  }
+
+  if (c.stage === STAGE.MOVE){
+    stepMove(c, body, ev);
     return;
   }
 
@@ -164,6 +210,133 @@ export function step(c, frame, body, ev){
     observe(c, kind, body);
     /* the caller advances on a completed rep, since the machines own rep detection */
     return;
+  }
+}
+
+/* ---- the acclimation stage ---------------------------------------------------------------- */
+
+function startMove(c){
+  c.mvHeldMs = 0;
+  c.mv = { key: c.mvOrder[c.mvIdx], n: 0, done: false,
+           /* run */    cadPeak: 0, cadMs: 0,
+           /* turn */   leftMin: 1, rightMin: 1, seenL: false, seenR: false,
+           /* jump */   risePeak: 0, jumps: 0,
+           /* crouch */ kneeMin: 180 };
+}
+
+/* Progress, 0..1, so the player can see the step filling rather than guessing whether it heard
+   them. Each step defines its own notion of "enough". */
+export function moveProgress(c){
+  const m = c.mv;
+  if (!m) return 0;
+  if (m.key === 'run')    return Math.min(1, m.cadMs/K.moveRunMs);
+  if (m.key === 'turn')   return ((m.seenL?0.5:0) + (m.seenR?0.5:0));
+  if (m.key === 'jump')   return Math.min(1, m.jumps/1);
+  if (m.key === 'crouch') return Math.min(1, c.mvHeldMs/K.moveHoldMs);
+  return 0;
+}
+
+/* Watch the body through one acclimation step, and advance when it has been demonstrated.
+   Everything here reads signals that already exist — the point of the stage is to record the
+   player's own range for them, not to detect anything new. */
+function stepMove(c, body, ev){
+  const m = c.mv;
+  if (!m) { startMove(c); return; }
+  const dt = body.dtMs;
+  m.n++;
+
+  if (m.key === 'run'){
+    m.cadPeak = Math.max(m.cadPeak, body.cadence || 0);
+    /* time spent at a committed pace, not merely moving — a shuffle should not set `cadFull` */
+    if ((body.cadence || 0) > K.moveCadFloor) m.cadMs += dt; else m.cadMs = Math.max(0, m.cadMs - dt);
+    if (m.cadMs >= K.moveRunMs) moveDone(c);
+    return;
+  }
+
+  if (m.key === 'turn'){
+    /* Shoulder foreshortening against the A-pose's square-on width gives the MAGNITUDE; the nose
+       offset gives the SIDE. Both in-plane. Measured: a body turn takes the ratio to 0.879 while a
+       head-only turn leaves it at exactly 1.000, which is why the ratio and not the nose is what
+       decides whether a turn happened at all. */
+    const sq = c.cal.shoulderW > 0 ? c.cal.shoulderW : body.shoulderW;
+    const ratio = body.shoulderW/Math.max(1e-6, sq);
+    if (ratio < K.moveTurnGate){
+      if (body.noseOff < 0){ m.leftMin  = Math.min(m.leftMin,  ratio); m.seenL = true; }
+      else                 { m.rightMin = Math.min(m.rightMin, ratio); m.seenR = true; }
+    }
+    if (m.seenL && m.seenR) moveDone(c);
+    return;
+  }
+
+  if (m.key === 'jump'){
+    m.risePeak = Math.max(m.risePeak, body.jumpRise || 0);
+    if (ev && ev.jump) m.jumps++;
+    if (m.jumps >= 1) moveDone(c);
+    return;
+  }
+
+  if (m.key === 'crouch'){
+    m.kneeMin = Math.min(m.kneeMin, body.kneeStraight);
+    /* hold it, so a stumble mid-stride is not recorded as this player's duck depth */
+    if (body.kneeStraight < K.moveCrouchGate) c.mvHeldMs += dt;
+    else c.mvHeldMs = Math.max(0, c.mvHeldMs - dt);
+    if (c.mvHeldMs >= K.moveHoldMs) moveDone(c);
+    return;
+  }
+}
+
+/* fit what this step observed, then move on — or fall through to the exercises */
+function moveDone(c){
+  fitMove(c);
+  c.mvIdx++;
+  c.mvHeldMs = 0;
+  if (c.mvIdx < c.mvOrder.length){ startMove(c); return false; }
+  c.mv = null;
+  if (c.exOrder.length){ c.stage = STAGE.REPS; c.exIdx = 0; startEx(c, c.exOrder[0]); return false; }
+  c.cal.ready = true; c.stage = STAGE.DONE;
+  return true;
+}
+
+/* A step could not be demonstrated at all — skip rather than trapping the player in onboarding,
+   and leave that control's population default in place. Same contract as `skipEx`. */
+export function skipMove(c){
+  if (c.stage !== STAGE.MOVE) return false;
+  c.mvIdx++;
+  c.mvHeldMs = 0;
+  if (c.mvIdx < c.mvOrder.length){ startMove(c); return false; }
+  c.mv = null;
+  if (c.exOrder.length){ c.stage = STAGE.REPS; c.exIdx = 0; startEx(c, c.exOrder[0]); return false; }
+  c.cal.ready = true; c.stage = STAGE.DONE;
+  return true;
+}
+
+/* Every fit is clamped, for the same reason the exercise fits are: one bad acclimation must not be
+   able to make a control impossible or free. */
+function fitMove(c){
+  const m = c.mv, cal = c.cal, B = K;
+  if (!m) return;
+  const cl = (v, lo, hi)=> Math.max(lo, Math.min(hi, v));
+
+  if (m.key === 'run' && m.cadPeak > 0){
+    /* full throttle a little UNDER their demonstrated pace, so the pace they showed is comfortably
+       full rather than only just reaching it */
+    cal.cadFull = cl(m.cadPeak*0.90, B.cadBounds[0], B.cadBounds[1]);
+  }
+  if (m.key === 'turn'){
+    cal.swSquare = c.cal.shoulderW;
+    const deepest = Math.min(m.leftMin, m.rightMin);
+    if (deepest < 1){
+      /* full steering at 65% of the turn they actually showed, matching `rangeFrac` elsewhere */
+      cal.turnRatio = cl(1 - (1 - deepest)*B.rangeFrac, B.turnBounds[0], B.turnBounds[1]);
+    }
+  }
+  if (m.key === 'jump' && m.risePeak > 0){
+    cal.jumpBig = cl(m.risePeak*B.rangeFrac, B.jumpBounds[0], B.jumpBounds[1]);
+  }
+  if (m.key === 'crouch' && m.kneeMin < 180){
+    /* between standing and their deepest, so a partial duck registers */
+    cal.crouchKnee = cl(m.kneeMin + (165 - m.kneeMin)*(1 - B.rangeFrac),
+                        B.crouchBounds[0], B.crouchBounds[1]);
   }
 }
 

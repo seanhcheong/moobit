@@ -392,6 +392,55 @@ Two bugs worth recording, because both were stable-and-wrong rather than obvious
   anyway, and `topSpeed`'s own comment already says it is *"deliberately just under the mid-game belt
   speed"*. Reverted.
 
+#### Acclimation: the CONTROLS stage
+
+Calibration has a fifth stage for the free run, between the A-pose and the exercise reps:
+`STAGE.MOVE`, driven by `Mode.moveOrder()` the way `REPS` is driven by `calOrder()`. It asks for each
+control in turn — run in place, turn left then right, jump, crouch — and **fits the threshold behind
+it to the player**, which is the same argument the exercise stage already makes: a textbook number is
+wrong twice over, once for the body and once for the estimator.
+
+| Step | Was | Becomes |
+|---|---|---|
+| **run** | `cadFull` 3.0, a flat guess | 90% of the pace you demonstrated |
+| **turn** | turn range guessed | 65% of the turn you actually showed, both ways |
+| **jump** | `bigRise` default | 65% of your own jump |
+| **crouch** | `enterKnee` 140 | between standing and your own deepest duck |
+
+Square-on needs no step: the A-pose is already square-on and already medians shoulder width over 30
+frames, so `cal.shoulderW` *is* the baseline.
+
+**The turn step is why the stage exists.** Run-direction steering reads shoulder foreshortening
+against that baseline, and how far a given person turns while jogging is not worth guessing at. Every
+fit is clamped, so one bad acclimation cannot make a control impossible or free, and every step is
+skippable — a control nobody can perform falls back to its population default rather than trapping
+the player in onboarding.
+
+#### Steering by run direction
+
+`Settings.turnSteer` picks between turning while you jog and lateral position. Turning is the default
+because it is what running actually feels like and it leaves the player free to stand where the room
+allows. Position steering stays as the fallback: it is the one measured end to end, and turning is
+the riskier of the two on a real body.
+
+Two in-plane signals, doing different jobs:
+
+```
+  case                          swRatio   noseOff
+  body 0, head 0                  1.000    0.0000
+  body 0, head +40                1.000    0.1511
+  body +25, head +25              0.879    0.1310
+```
+
+`swRatio` gives the **magnitude** and acts as the **gate** — it sits at exactly 1.000 for a head-only
+turn and drops to 0.879 for a body turn, so glancing sideways cannot steer. `noseOff` gives the
+**side**. The nose alone would not do: a head turned 40° moves it 0.151, indistinguishable from a real
+turn. Everything else was measured and rejected — limb-length asymmetry 0.015 at a 15° turn, ankle
+and hip asymmetry 0.003, all under a ~0.03 noise floor, against `noseOff`'s 0.075.
+
+Both are smoothed on the same `steerTau` as the hip signal, because a turned runner's shoulders rock
+with their footfalls too and the fix is identical.
+
 #### The practice period
 
 A free run holds the belt at its **lowest tier**, skips every surge and spawns **no obstacles** until

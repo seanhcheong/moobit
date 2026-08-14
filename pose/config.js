@@ -266,6 +266,18 @@ export const CONFIG = {
     /* thresholds may never be calibrated outside these bounds, in case a calibration rep
        is itself garbage */
     kneeBounds: [70, 150],
+    /* bounds for the control fits, same purpose: a garbage acclimation must not make a control
+       impossible or free */
+    /* how much of each control has to be demonstrated before its step is satisfied */
+    moveRunMs: 2200,       // ms at a committed pace
+    moveHoldMs: 400,       // ms of holding a crouch
+    moveCadFloor: 1.6,     // steps/s that counts as a committed pace rather than a shuffle
+    moveTurnGate: 0.975,   // swRatio below which a turn is a real body turn, not a head turn
+    moveCrouchGate: 150,   // deg on the straighter knee that counts as starting to crouch
+    turnBounds: [0.80, 0.985],   // swRatio; nearer 1.0 means a smaller turn earns full steering
+    cadBounds: [1.4, 4.5],       // steps/s
+    crouchBounds: [110, 158],    // deg on the straighter knee
+    jumpBounds: [0.06, 0.30],    // x legLength
     elbowBounds: [70, 150],
     shoulderYBounds: [0.30, 1.30],
     lungeSpanBounds: [0.30, 1.40],
@@ -300,6 +312,16 @@ export function defaultCalibration(){
     jackCloseSpan: CONFIG.jack.closeAnkleSpan,
     lungeFullSpan: CONFIG.lunge.fullSpan,
     burpeeSquatKnee: CONFIG.burpee.squatKnee,
+    /* ---- the free run's four CONTROLS, fitted by the MOVE acclimation stage --------------
+       Defaults are population guesses, exactly like the exercise thresholds above, and exactly as
+       wrong for any particular body. The turn one is the reason this stage exists: run-direction
+       steering reads shoulder foreshortening against the player's own square-on width, and how far
+       a given person turns while jogging on the spot is not something worth guessing. */
+    swSquare: 0,                 // square-on shoulder width; 0 = not measured, fall back to live
+    turnRatio: 0.94,             // swRatio at this player's comfortable turn — full steering there
+    cadFull: CONFIG.run ? 3.0 : 3.0,   // steps/s that earns full throttle
+    crouchKnee: CONFIG.crouch.enterKnee,
+    jumpBig: CONFIG.jump.bigRise,
   };
 }
 

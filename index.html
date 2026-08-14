@@ -709,6 +709,12 @@ const TUNING = {
        "I am doing a squat". A deep squat is geometrically a crouch, so without this every rep would
        throw the penguin prone mid-exercise into a state where input is ignored. */
     duckLead: 16,        // world units ahead
+    /* run-direction steering. `turnGate` is where a turn starts to count at all — measured, a
+       head-only turn sits at 1.000 and a 15 degree body turn at 0.955, so 0.975 admits real turns
+       and rejects head movement. `turnRatioDefault` is the fallback full-steering point for a player
+       whose acclimation did not measure their range. */
+    turnGate: 0.975,
+    turnRatioDefault: 0.90,
   },
 
   /* ---- the HIIT session ---------------------------------------------------------------
@@ -1665,7 +1671,10 @@ const MODES = {
    they were for anyone who wants a combination the presets do not cover. */
 const PRESETS = {
   lanes: { label:'LANES', sub:'three lanes, lunge to change',
-           lanes:true,  mode:'mixed', camera:null },
+           lanes:true,  mode:'mixed',
+  /* which steering scheme the free run uses: turn while running, or lateral position. Position is
+     the one measured end to end; turning is what the game is actually about. */
+  turnSteer:true, camera:null },
   free:  { label:'FREE RUN', sub:'run in place to move, step to steer',
            lanes:false, mode:'legs',  camera:true },
 };
@@ -1683,6 +1692,12 @@ const Mode = {
     const o = this.cur.pool.slice();
     if (Run.lanes) o.push(5);            // LUNGE_R; the machine is symmetric, one side is enough
     return o;
+  },
+  /* Which CONTROLS acclimation should teach. Only the free run has any: lane mode steers by lunging
+     and has no cadence, so there is nothing there to measure and the stage is skipped entirely. */
+  moveOrder(){
+    if (Run.lanes || Signal.source !== 'pose') return [];
+    return ['run','turn','jump','crouch'];
   },
   /* Changing mode mid-run can leave a wall in flight demanding an exercise the mode no longer
      contains, which is the same unfairness as showing a camera player an obstacle only a keyboard
@@ -3501,6 +3516,8 @@ const BodyDrive = {
   /* `hipRaw` is what the camera said this frame; `hipX` is that low-passed. Everything that steers
      reads `hipX`, because the raw value carries the player's footfalls — see `steerTau`. */
   hipRaw:0, hipX:0, centre:0, haveCentre:false,
+  /* run-direction steering inputs, smoothed the same way and for the same reason as hipX */
+  swRatio:1, noseOff:0, turnRaw:0, turn:0,
   seenT:-99,                   /* s since the last camera frame — see step() */
 
   /* THE PRACTICE PERIOD. A free run holds the belt at its lowest tier, skips every surge and
@@ -3520,8 +3537,20 @@ const BodyDrive = {
      on `Run.lanes` anyway, so the two schemes can never both be live. */
   active(){ return Signal.source === 'pose' && !Run.lanes; },
 
+  /* per-player numbers from acclimation. Falls back to the tuning defaults for anything the stage
+     did not measure, so a skipped step degrades to the population value rather than to zero. */
+  cadFull: 0, turnRatio: 0, swSquare: 0,
+  setCal(c){
+    if (!c) return;
+    this.cadFull   = c.cadFull   || 0;
+    this.turnRatio = c.turnRatio || 0;
+    this.swSquare  = c.swSquare  || 0;
+  },
+
   /* the pose backend reports these every frame */
   setCadence(c){ this.cad = c; this.seenT = 0; },
+  /* run DIRECTION: shoulder foreshortening for magnitude and the gate, nose offset for the side */
+  setTurn(swRatio, noseOff){ this.swRatio = swRatio; this.noseOff = noseOff; },
   setHip(x){
     this.hipRaw = x;
     /* Self-seeded, like the jump machine's ankle baseline, and for the same reason: `hipX` is
@@ -3543,6 +3572,24 @@ const BodyDrive = {
     /* Low-pass the steering signal here rather than in `setHip`, because camera frames arrive at
        whatever rate the pipeline manages and this needs a real dt to be rate-independent. */
     if (dt > 0) this.hipX += (this.hipRaw - this.hipX)*(1 - Math.exp(-dt/BD.steerTau));
+
+    /* RUN DIRECTION, signed, -1..+1.
+
+       Magnitude and the gate come from shoulder foreshortening against the player's own square-on
+       width; the SIDE comes from the nose offset. Measured, that pairing is what makes this usable:
+       a head-only turn leaves the shoulder ratio at exactly 1.000 while a body turn takes it to
+       0.879, so glancing sideways cannot steer. The nose alone would — it moves 0.151 for a
+       head-only 40 degree turn.
+
+       Smoothed on the same constant as the hip signal, because a turned runner's shoulders also rock
+       with their footfalls and the fix is identical. */
+    const sq = this.swSquare > 0 ? this.swSquare : 0;
+    const gate = this.turnRatio > 0 ? this.turnRatio : BD.turnRatioDefault;
+    if (sq > 0 && this.swRatio < BD.turnGate){
+      const depth = clamp01((BD.turnGate - this.swRatio)/Math.max(0.001, BD.turnGate - gate));
+      this.turnRaw = depth * (this.noseOff < 0 ? -1 : 1);
+    } else this.turnRaw = 0;
+    if (dt > 0) this.turn += (this.turnRaw - this.turn)*(1 - Math.exp(-dt/BD.steerTau));
 
     const raw = clamp01((this.cad - BD.cadIdle)/Math.max(0.01, BD.cadFull - BD.cadIdle));
     /* confirmations: a real pace, and a real step aside. Deliberately above the bare threshold, so
@@ -3584,6 +3631,18 @@ const BodyDrive = {
      makes it absolute — where you stand is where the penguin sits — while still accelerating,
      banking and settling instead of snapping. */
   ix(){
+    /* RUN DIRECTION is the chosen scheme when the player has acclimated it. It steers by turning
+       while jogging, which is what running actually feels like, and it leaves lateral position free
+       — the player can stand where the room allows instead of where the game demands.
+
+       Position steering stays as the fallback and as a setting, because it is the one measured to
+       work end to end and this is the riskier of the two on a real body. `turnAsSteer` picks. */
+    if (Settings.turnSteer && this.swSquare > 0){
+      /* a heading, so it drives toward an offset rather than commanding a raw velocity — same
+         position-error shape as below, which is what keeps it settling instead of sliding */
+      const target = clamp(this.turn, -1, 1) * playLim();
+      return clamp((target - P.x)/Math.max(0.01, BD.settle), -1, 1);
+    }
     let off = this.hipX - this.centre;
     const d = BD.dead;
     off = Math.abs(off) <= d ? 0 : (off - Math.sign(off)*d);
@@ -3731,6 +3790,10 @@ const Signal = {
   },
   steer(hipX){
     BodyDrive.setHip(hipX || 0);
+    return true;
+  },
+  turn(swRatio, noseOff){
+    BodyDrive.setTurn(swRatio === undefined ? 1 : swRatio, noseOff || 0);
     return true;
   },
 
@@ -3905,6 +3968,15 @@ const Cam3 = {
   syncCalOrder(){
     if (!this.ready || !this.cal) return;
     if (this.Cal.setExOrder) this.Cal.setExOrder(this.cal, Mode.calOrder());
+    if (this.Cal.setMoveOrder) this.Cal.setMoveOrder(this.cal, Mode.moveOrder());
+  },
+
+  /* Hand the acclimation's fits to the game. The pose layer records them onto `cal` because that is
+     where every other per-player threshold lives; the movement drive reads them from here so it
+     never has to reach into the detector. Called when calibration completes. */
+  applyMoveCal(){
+    const c = this.cal && this.cal.cal;
+    if (c) BodyDrive.setCal(c);
   },
 
   beginCalibration(){
@@ -3973,15 +4045,21 @@ const Cam3 = {
       if (C.cal.stage !== C.Cal.STAGE.REPS) return;
       const done = C.Cal.repDone(C.cal);
       Sfx.chime(2);
-      if (done){ C.save(); Fx.flash(0.2); }
+      if (done){ C.save(); C.applyMoveCal(); Fx.flash(0.2); }
     },
     repRejected(kind, why){ UI.reject(why); },
     trackingState(s){ Signal.trackingState(s); },
   },
 
   skipCurrent(){
-    if (!this.ready || this.cal.stage !== this.Cal.STAGE.REPS) return;
-    if (this.Cal.skipEx(this.cal)) this.save();
+    if (!this.ready) return;
+    const st = this.cal.stage, K2 = this.Cal.STAGE;
+    if (st !== K2.REPS && st !== K2.MOVE) return;
+    if (this.cal.stage === this.Cal.STAGE.MOVE){
+      if (this.Cal.skipMove(this.cal)){ this.save(); this.applyMoveCal(); }
+      return;
+    }
+    if (this.Cal.skipEx(this.cal)){ this.save(); this.applyMoveCal(); }
   },
 
   paintCal(){
@@ -3997,6 +4075,14 @@ const Cam3 = {
       big = 'HOLD STILL, ARMS OUT';
       sub = 'a median over 30 frames, never one';
       prog = clamp01(C.samples.shoulderW.length/30);
+    } else if (C.stage === K.MOVE){
+      /* the acclimation stage: one control at a time, with its own progress so the player can see
+         the step filling rather than guessing whether the game heard them */
+      const key = C.mv ? C.mv.key : C.mvOrder[C.mvIdx];
+      const pr = (this.Cal.MOVE_PROMPT && this.Cal.MOVE_PROMPT[key]) || ['MOVE', ''];
+      title = 'CONTROLS  ' + (C.mvIdx+1) + '/' + C.mvOrder.length;
+      big = pr[0]; sub = pr[1];
+      prog = this.Cal.moveProgress ? this.Cal.moveProgress(C) : 0;
     } else if (C.stage === K.REPS){
       const k = C.exOrder[C.exIdx];
       const nm = (EX_NAMES[k] || 'MOVE');
@@ -4008,7 +4094,9 @@ const Cam3 = {
       title = 'READY'; big = 'CALIBRATED'; sub = 'those are your numbers now'; prog = 1;
     }
     UI.calShow(true, title, big, sub, prog);
-    $('btnCalSkip').style.display = (C.stage === K.REPS) ? '' : 'none';
+    /* skippable in both teaching stages, so a control or an exercise nobody can perform never traps
+       the player in onboarding */
+    $('btnCalSkip').style.display = (C.stage === K.REPS || C.stage === K.MOVE) ? '' : 'none';
   },
 
   paintPip(){

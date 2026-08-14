@@ -62,16 +62,20 @@ export function step(m, body, cal, ev){
   m.frozen = false;
 
   const k = body.kneeStraight;
+  /* the player's own duck depth when acclimation measured it, the population default otherwise —
+     same contract as every exercise threshold in this layer */
+  const enter = (cal && cal.crouchKnee) || C.enterKnee;
+  const exit  = enter + (C.exitKnee - C.enterKnee);
   /* Hysteresis, because this drives a duck and a control that chatters at its own threshold is
      worse than one that is slightly slow to release. Entering needs a dwell as well — a stumble
      mid-stride briefly bends both knees, and that is not a duck. */
   if (!m.down){
-    if (k < C.enterKnee){
+    if (k < enter){
       m.heldMs += dt;
       if (m.heldMs >= C.minMs) m.down = true;
     } else m.heldMs = 0;
   } else {
-    if (k > C.exitKnee){ m.down = false; m.heldMs = 0; }
+    if (k > exit){ m.down = false; m.heldMs = 0; }
   }
 
   body.crouching = m.down;

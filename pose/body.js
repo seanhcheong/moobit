@@ -74,6 +74,9 @@ export function makeBody(){
     /* published by crouch.js: are you down right now. A LEVEL, because a duck the player is
        still holding when the obstacle arrives has to keep counting. */
     crouching:false,
+    /* signed, in shoulder widths: nose x relative to the shoulder midpoint. WHICH WAY the body is
+       turned; the magnitude and the head-turn rejection come from shoulder foreshortening. */
+    noseOff:0,
     /* ms since the torso was last nearer horizontal than vertical — how a burpee's finishing hop
        is told apart from a deliberate jump */
     msSinceProne:60000,
@@ -162,6 +165,17 @@ export function readBody(body, frame, cal){
   /* prone-safe depth: shoulders above the hands, in shoulder widths */
   const wy = (I[LM.WRIST_L].y + I[LM.WRIST_R].y)*0.5;
   body.pushDepth = (sh.y - wy)/body.shoulderW;
+
+  /* NOSE OFFSET — which way the body is turned, in shoulder widths of the nose from the shoulder
+     midpoint. Signed and fully in-plane, which is what makes it the only usable direction cue for a
+     body turn: limb-length asymmetry came out at 0.015 at a 15 degree turn and ankle/hip asymmetry
+     at 0.003, all under a ~0.03 noise floor, while this reads 0.075.
+
+     On its own it cannot tell a body turn from a head turn — a head turned 40 degrees over square
+     shoulders moves it 0.151. That is what `shoulderW` against the calibrated square-on width is
+     for: it stays at exactly 1.000 for a head-only turn and drops to 0.879 for a body turn. Sign
+     from here, magnitude and the gate from there. */
+  body.noseOff = (I[LM.NOSE].x - sh.x)/body.shoulderW;
 
   body.wristsAboveShoulders =
     (I[LM.WRIST_L].y - sh.y)/T > 0.02 && (I[LM.WRIST_R].y - sh.y)/T > 0.02;
