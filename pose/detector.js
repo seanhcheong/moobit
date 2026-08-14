@@ -183,6 +183,10 @@ export function push(d, res, tMs, sink){
     if (sink && sink.step) sink.step(d.runM.cadence);
   }
   if (sink && sink.cadence) sink.cadence(d.runM.cadence);
+  /* Lateral position, reported every frame as a LEVEL. The free run steers by where the player is
+     standing rather than by a gesture, so this is the raw offset and the game decides what centre
+     it is relative to — the detector has no business knowing how wide the play area is. */
+  if (sink && sink.steer) sink.steer(d.body.hipX);
 
   Lunge.step(d.lunge, d.body, d.cal, ev);
   if (ev.lane !== 0){

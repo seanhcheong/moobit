@@ -343,6 +343,50 @@ without finishing one and the belt resumes and the wall arrives, which is the fa
 design already wanted rather than a silent stall with no way out. `stall.mjs` (20 assertions)
 covers both halves.
 
+### The free run: the whole body as the controller
+
+Turn **3-lane fitness run** off with the camera on and `BodyDrive` takes the wheel. Cadence drives
+you forward, where you stand steers. It only produces `ix` and `iz` — the same two axes a keyboard
+produces — so all of `TUNING.move` applies unchanged: 0.21s to top speed, 0.30s of skid, the bank
+into a turn, the lean into acceleration. No physics is special-cased for a camera, and a keypress on
+either axis still takes over instantly.
+
+**Forward is a throttle, not a position.** Cadence maps through `cadIdle`/`cadFull` to 0..1 and feeds
+`iz`, so momentum arrives in three stacked layers: `cadTau` smooths the signal, the cadence itself
+decays over ~1.5s, and then the velocity skids for 0.30s.
+
+**Squatting must not cost you ground, and `effort buys time` already answers that.** Performing a rep
+means standing still, so a naive throttle bleeds to nothing mid-set and punishes the player for doing
+what the wall asked. The belt already eases to `workBeltMul` while rep progress arrives, so the
+throttle reuses the same mechanic and the same budget: while a rep is in flight it *holds*, and the
+grace runs out on `effortBudget` at the same moment the belt stops easing. One rule, two outputs.
+
+**Steering is absolute, with momentum from the position error.** Where you stand *is* where the
+penguin sits, which is self-correcting — a positional error fixes itself the instant tracking
+recovers, where a missed gesture is gone for good. Momentum comes from deriving the input from the
+error rather than from the lean: step aside and the error is large so you get full lateral input and
+the penguin banks into it; as it closes the input eases off and it settles. The centre self-seeds
+like `jump.js` seeds its ankle baseline, so there is no calibration step for the one control that
+ought to be obvious, and it stops tracking beyond `centreHold` so a deliberate step aside never
+silently re-homes the control.
+
+Two bugs worth recording, because both were stable-and-wrong rather than obviously broken:
+
+- The steering target was `PLAY.half`, which is **0.38 units outside the reachable area** — the
+  bounds enforce `PLAY.half - 0.42*PLAY.latK`. So at a full step aside the controller sat at a
+  permanent 0.42 of lateral input pushing into the rail while the rail bounced it back at -0.09,
+  forever. There is now one `playLim()` used by both the bounds and anything aiming at a position.
+- I also "fixed" a ragdoll by scaling the throttle against belt drag, on the theory that full cadence
+  at a low tier would hit the front bumper. Measured, that was false: 200 frames of full cadence
+  travels z -9.2 to -14.0 against a roller at -42.0 and never leaves `RUN`. The ragdolls were my test
+  steering with no throttle, so the belt carried the player off the rear lip. The scaling was inert
+  anyway, and `topSpeed`'s own comment already says it is *"deliberately just under the mid-game belt
+  speed"*. Reverted.
+
+`drive.mjs` (34 assertions) covers it, mutation-tested four ways — dropping the rep hold, making
+steering a throttle instead of a position error, letting the centre chase a deliberate step, and
+dropping the throttle release on tracking loss.
+
 ### Running in place, and what "off the ground" means
 
 `pose/run.js` publishes a **rate**, not reps: `body.cadence` in steps per second, plus `ev.step` on

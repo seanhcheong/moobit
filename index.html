@@ -609,6 +609,44 @@ const TUNING = {
     coinEvery: [17, 30],
   },
 
+  /* ---- THE WHOLE BODY AS THE CONTROLLER ------------------------------------------------
+     Free run, no lanes: cadence drives you forward, where you stand steers. Both feed the
+     ORDINARY movement axes rather than writing positions, so both inherit the momentum tuning
+     in `move` — accel 0.21s, skid 0.30s, the bank, the lean into acceleration. Nothing about
+     the physics is special-cased for a camera, which is the same reason the keyboard backend
+     runs the whole rep pipeline instead of shortcutting it.
+
+     FORWARD. `cadence` in steps/s becomes a throttle. `cadFull` is the cadence that earns full
+     throttle; below `cadIdle` there is none. A brisk jog on the spot is 2.5-3 steps/s, so 3.0
+     means a committed pace reaches top speed and there is headroom above it rather than a
+     ceiling you hit immediately.
+
+     AND THE PART THAT MAKES SQUATTING SURVIVABLE. Performing a rep means standing still, so a
+     naive throttle would bleed to nothing mid-set and cost the player ground for doing exactly
+     what the wall asked. The belt already solves this — it eases to `workBeltMul` while rep
+     progress arrives — so the throttle uses the SAME mechanic rather than a second one: while a
+     rep is in flight the throttle HOLDS at its last value. Metered by the same `effortBudget`,
+     so standing still and waving vaguely cannot coast forever.
+
+     LATERAL. Absolute, not a throttle: where you stand in the room IS where the penguin sits on
+     the belt, which is self-correcting and needs no gesture — a positional error fixes itself the
+     instant tracking recovers, where a missed gesture is lost for good. Momentum comes from
+     deriving the throttle from the POSITION ERROR: step aside and the error is large so you get
+     full lateral input and the penguin banks into it, and as it closes the input eases off and it
+     settles. `span` is how far you physically move to reach the edge of the play area, in
+     shoulder widths of hip travel, because a metre means different things to different bodies. */
+  bodyDrive: {
+    cadIdle: 0.7,        // steps/s below which there is no forward throttle at all
+    cadFull: 3.0,        // steps/s that earns full throttle
+    holdRep: true,       // hold the throttle while rep progress is arriving
+    span: 0.55,          // x shoulderWidth of hip travel = the edge of the play area
+    dead: 0.08,          // x shoulderWidth of slop around centre, so standing still does not drift
+    settle: 0.9,         // world units of position error that earns full lateral input
+    centreTau: 6.0,      // s — the self-seeded centre follows you drifting, slowly
+    centreHold: 0.35,    // x shoulderWidth beyond which the centre stops tracking, so a
+                         // deliberate step aside is never mistaken for a new home position
+  },
+
   /* ---- the HIIT session ---------------------------------------------------------------
      Endless mode has no structure: the belt ramps through every tier until something hits you,
      and every session ends in failure. That is the right shape for an arcade score and the wrong
@@ -2316,6 +2354,15 @@ function getObstacle(type){
    keeps a full dodge the same *duration* in portrait as it is in landscape.
    ===================================================================================== */
 const PLAY = { half: REF_HALF, latK: 1, portrait:false, aspect:1 };
+/* THE HONEST PLAYABLE EDGE — how far from centre the penguin can actually get. Not `PLAY.half`:
+   the margin scales with the width so a full dodge costs the same TIME in any aspect.
+
+   It is a function rather than two copies because anything AIMING at a lateral position has to aim
+   at the same number the bounds enforce. The body-drive steering first mapped a full step aside to
+   `PLAY.half`, which is 0.38 units outside this, so the controller sat at a permanent 0.42 of
+   lateral input pushing into the rail and the rail bounced it back at -0.09 forever. Stable, wrong,
+   and it would have felt like the penguin straining against the wall at the edge of every dodge. */
+function playLim(){ return PLAY.half - 0.42*PLAY.latK; }
 function updatePlayArea(){
   const aspect = camera.aspect;
   PLAY.aspect = aspect;
@@ -2490,6 +2537,13 @@ function stepPlayer(dt){
   let ix = 0, iz = 0;
   if (!locked && P.alive){
     ix = In.mx; iz = In.mz;
+    /* The body drives the same two axes a keyboard does, so all of `TUNING.move` applies to it
+       unchanged. Keys still win when they are being pressed: a player reaching for the keyboard
+       mid-run is asking to take over, and it keeps every existing test meaningful. */
+    if (BodyDrive.active()){
+      if (ix === 0) ix = BodyDrive.ix();
+      if (iz === 0) iz = BodyDrive.iz();
+    }
     if (In.autoRun) iz = Math.min(iz, -1);              // auto-run holds forward throttle
     const l = Math.hypot(ix,iz);
     if (l > 1){ ix/=l; iz/=l; }
@@ -2656,9 +2710,8 @@ function stepPlayer(dt){
     P.vy = 0; P.grounded = true; P.apexLeft = 0; P.airT = 0;
   } else { P.grounded = false; P.airT += dt; }
 
-  /* ---------- lateral bounds: the honest playable width ----------
-     the margin scales with the width so a full dodge costs the same TIME in any aspect */
-  const lim = PLAY.half - 0.42*PLAY.latK;
+  /* ---------- lateral bounds: the honest playable width ---------- */
+  const lim = playLim();
   if (P.x < -lim){ P.x = -lim; if (P.vx<0) P.vx *= -0.24; }
   if (P.x >  lim){ P.x =  lim; if (P.vx>0) P.vx *= -0.24; }
 
@@ -3345,6 +3398,94 @@ const MOVE = { SQUAT:0, PUSHUP:1, JACK:2, BURPEE:3, LUNGE_L:4, LUNGE_R:5 };
 const IS_LUNGE = (m)=> m === MOVE.LUNGE_L || m === MOVE.LUNGE_R;
 const TRACK = { GOOD:'good', DEGRADED:'degraded', LOST:'lost' };
 
+/* =====================================================================================
+   BODY DRIVE — the whole body as an analogue stick, for the free run with no lanes.
+
+   Produces nothing but `ix` and `iz`, the same two axes a keyboard produces, so every bit of
+   the movement feel in `TUNING.move` applies unchanged: 0.21s to top speed, 0.30s of skid,
+   the bank into a turn, the lean into acceleration. This object decides WHERE the player is
+   trying to go; it never touches position or velocity itself.
+
+   It only takes over when there is a camera and lanes are off. With lanes on, a lane change is
+   already a discrete event and a continuous lateral axis would fight it.
+   ===================================================================================== */
+const BD = TUNING.bodyDrive;
+const BodyDrive = {
+  on:false,                    /* is a camera currently driving the axes? */
+  cad:0,                       /* last cadence reported, steps/s */
+  thr:0,                       /* forward throttle 0..1, after the rep hold */
+  hipX:0, centre:0, haveCentre:false,
+  seenT:-99,                   /* s since the last camera frame — see step() */
+
+  reset(){ this.cad=0; this.thr=0; this.centre=0; this.haveCentre=false; this.seenT=-99; },
+
+  /* Free run + camera. Lanes on means the lunge owns steering, and `Signal.laneChange` is gated
+     on `Run.lanes` anyway, so the two schemes can never both be live. */
+  active(){ return Signal.source === 'pose' && !Run.lanes; },
+
+  /* the pose backend reports these every frame */
+  setCadence(c){ this.cad = c; this.seenT = 0; },
+  setHip(x){
+    this.hipX = x;
+    /* Self-seeded, like the jump machine's ankle baseline, and for the same reason: `hipX` is
+       measured from the centre of the IMAGE, which is not where the player is standing, and
+       demanding a calibration step for it would put a setup screen in front of the one control
+       that ought to be obvious. */
+    if (!this.haveCentre){ this.centre = x; this.haveCentre = true; }
+  },
+
+  /* Forward throttle from cadence, with the rep hold. Called once per fixed step. */
+  step(dt){
+    if (!this.active()){ this.thr = 0; return; }
+    this.seenT += dt;
+
+    const raw = clamp01((this.cad - BD.cadIdle)/Math.max(0.01, BD.cadFull - BD.cadIdle));
+    /* THE REP HOLD. Standing still to perform a rep must not cost the player ground, and the belt
+       already answers this exact problem by easing while rep progress arrives. Same mechanic, same
+       budget: `Signal.progT` is seconds since the last `repProgress`, and `Belt.effortT` is the
+       spend against `effortBudget`, so a player who never completes a rep runs out of grace here
+       at the same moment the belt stops easing for them. One rule, two outputs. */
+    const midRep = BD.holdRep && Signal.progT < TUNING.run.driveHold &&
+                   Belt.effortT < TUNING.run.effortBudget;
+    if (midRep) return;                  /* hold `thr` exactly where it was */
+    this.thr = raw;
+
+    /* The centre tracks you drifting across the room, but only while you are near it. Beyond
+       `centreHold` you are deliberately standing to one side to steer, and letting the centre
+       chase you there would silently re-home the control under the player and undo the input. */
+    if (Math.abs(this.hipX - this.centre) < BD.centreHold && dt > 0){
+      this.centre += (this.hipX - this.centre)*(1 - Math.exp(-dt/BD.centreTau));
+    }
+  },
+
+  /* Forward axis: negative is forward, matching In.mz and auto-run.
+
+     Deliberately NOT scaled against belt speed. I tried that, on the theory that full cadence at a
+     low tier would carry the penguin into the front bumper — then measured it. With spawns
+     suppressed, 200 frames of full cadence never leaves RUN and travels from z -9.2 to -14.0
+     against a front roller at -42.0. The ragdolls I was chasing were obstacle hits inside the test
+     harness, not the bumper. The scaling was inert anyway: tier 1 drag is 10, so any multiplier
+     above 1.2 clamps to full throttle regardless of tier.
+
+     `TUNING.move.topSpeed` is 12.0 and its own comment reads "deliberately just under the mid-game
+     belt speed (13.0)" — the balance this was trying to add is already in the tuning. Flat out
+     gains ground slowly at low tiers and loses it at high ones, which is the fiction. */
+  iz(){ return -this.thr; },
+  /* Lateral axis, derived from POSITION ERROR rather than from the lean directly. That is what
+     makes it absolute — where you stand is where the penguin sits — while still accelerating,
+     banking and settling instead of snapping. */
+  ix(){
+    let off = this.hipX - this.centre;
+    const d = BD.dead;
+    off = Math.abs(off) <= d ? 0 : (off - Math.sign(off)*d);
+    const target = clamp(off/Math.max(0.01, BD.span - d), -1, 1) * playLim();
+    return clamp((target - P.x)/Math.max(0.01, BD.settle), -1, 1);
+  },
+
+  /* Losing the body must not leave the last throttle driving the player forward into a wall. */
+  lost(){ this.thr = 0; this.cad = 0; },
+};
+
 const Signal = {
   source:'key',                 /* 'key' | 'touch' | 'pose' — for the debug overlay only */
   track:TRACK.GOOD,
@@ -3463,7 +3604,22 @@ const Signal = {
     this.track = s;
     /* never fail the player for something the camera did. Freeze the world instead. */
     Game.holdFor(s === TRACK.LOST);
+    /* and drop the body's hold on the movement axes — a throttle left running while the camera
+       cannot see anyone would keep driving the penguin forward on its own */
+    if (s === TRACK.LOST) BodyDrive.lost();
     UI.tracking(s);
+  },
+
+  /* ---- the whole-body drive, for the free run. Both are LEVELS reported every frame rather than
+     events, which is what lets them be absolute: a value that is briefly wrong corrects itself on
+     the next frame, where a missed gesture is gone for good. ---- */
+  cadence(c){
+    BodyDrive.setCadence(Math.max(0, c || 0));
+    return true;
+  },
+  steer(hipX){
+    BodyDrive.setHip(hipX || 0);
+    return true;
   },
 };
 
@@ -5306,6 +5462,10 @@ const Game = {
     Belt.reset(); Belt.scoring = false; Belt.hold = false; Ex.reset(); Run.reset();
     RepDrive.cancel(); Signal.track = TRACK.GOOD; this.holdFor(false);
     Signal.progCount = 0; Signal.rejected = 0; Signal.count = 0; Signal.last = -1;
+    /* the self-seeded steering centre belongs to a run, not to the page: keeping it across a
+       restart would leave the penguin drifting from the first frame because the player has since
+       moved, and the whole point of self-seeding is that it costs no setup */
+    BodyDrive.reset();
     Score.reset();
     Spawn.gapLeft = 16; Spawn.blocked = 0; Spawn.lastLead = 9.9; Spawn.minLead = 99;
     Spawn.count = 0; Spawn.patterns = 0;
@@ -5419,6 +5579,9 @@ function simulate(dt){
   Ex.step(dt);
   Run.step(dt);
   stepObstacles(dt);
+  /* After Belt.step, which advances `Signal.progT`, and before stepPlayer, which reads the axes.
+     The rep hold depends on `progT` being fresh, so the order here is load-bearing. */
+  BodyDrive.step(dt);
   stepPlayer(dt);
   Fx.step(dt);
   Score.step(dt);
@@ -5579,7 +5742,7 @@ window.BR = { TUNING, LIVE, P, Belt, Game, In, Score, Quality, DBG, Post, PLAY, 
   simulate, updatePlayArea, stepPlayer, doJump, startDive, startRagdoll, spawnPattern, spawnZBase, getObstacle, PATTERNS, defNeedsDive, patternNeedsDive, retireUnanswerable,
   curPose, prevPose, FIXED, Ex, exPose, EX_NAMES, EX_SHORT, UI, TEX, world,
   Run, Coins, Walls, Moves, MOVE, Signal, RepDrive, TRACK, IS_LUNGE, beltDragNow, Cam3, Session,
-  MODES, Mode,
+  MODES, Mode, BodyDrive,
   haltRender(v){ renderHalted = !!v; lastT = 0; acc = 0; },
   applyPoseNow(){ applyPose(renderPose, 1/60); },
   /* headless-test driver: advance the fixed-step simulation without waiting on rAF */
