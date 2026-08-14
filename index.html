@@ -193,6 +193,8 @@
     background:rgba(12,16,18,.62);border:1px solid rgba(255,255,255,.16);
     backdrop-filter:blur(6px);z-index:6}
   #cadChip.on{display:block}
+  /* what the chosen session actually does, in words, because a two-word label cannot carry it */
+  #presetSub{font-size:10px;letter-spacing:.08em;opacity:.55;margin:-2px 0 8px;text-align:right}
   #cadChip .cadLbl{font-size:9px;letter-spacing:.18em;opacity:.6;margin-bottom:1px}
   #cadNum{font-size:46px;line-height:.92;color:var(--mint);font-variant-numeric:tabular-nums}
   #cadChip.idle #cadNum{color:#8f9a96}
@@ -374,6 +376,12 @@
   <div id="settings">
     <div id="setCard" class="panel">
       <div class="lbl" style="margin-bottom:6px">Settings</div>
+      <div class="row"><span>Session</span>
+        <div class="seg" id="segPreset">
+          <div data-v="lanes" data-on="1">LANES</div><div data-v="free">FREE RUN</div>
+        </div>
+      </div>
+      <div id="presetSub">three lanes, lunge to change</div>
       <div class="row"><span>Camera control</span><div class="toggle" id="tgCam" data-on="0"></div></div>
       <div class="row"><span>3-lane fitness run</span><div class="toggle" id="tgLanes" data-on="1"></div></div>
       <div class="row"><span>Exercises</span>
@@ -1611,6 +1619,20 @@ const MODES = {
   legs:  { label:'LEGS',  sub:'squats and jumping only',
            pool:[0] },
 };
+/* SESSION PRESETS — one choice instead of three switches.
+
+   The three settings that make up a session are not independent in practice: the free run is
+   "camera on, lanes OFF, squats only", and requiring a player to work that out — including that
+   turning something OFF is how you turn a mode ON — is a bad control surface that I built by adding
+   each capability as its own switch. These apply a bundle. The individual toggles stay exactly where
+   they were for anyone who wants a combination the presets do not cover. */
+const PRESETS = {
+  lanes: { label:'LANES', sub:'three lanes, lunge to change',
+           lanes:true,  mode:'mixed', camera:null },
+  free:  { label:'FREE RUN', sub:'run in place to move, step to steer',
+           lanes:false, mode:'legs',  camera:true },
+};
+
 const Mode = {
   get cur(){ return MODES[Settings.mode] || MODES.mixed; },
   pool(){ return this.cur.pool; },
@@ -4820,6 +4842,47 @@ const UI = {
     tg($('tgAuto'),'auto');
     tg($('tgSound'),'sound',(v)=>Sfx.setOn(v));
     tg($('tgShake'),'shake');
+    /* SESSION PRESETS. Applies the bundle through exactly the same paths the individual switches
+       use — including the camera's async permission flow — so there is one implementation of each
+       change rather than two that can disagree. The individual switches stay live afterwards; a
+       preset is a shortcut, not a mode the rest of the code knows about. */
+    const applyPreset = async (name)=>{
+      const P0 = PRESETS[name];
+      if (!P0) return;
+      for (const c of $('segPreset').children) c.dataset.on = (c.dataset.v === name) ? '1':'0';
+      $('presetSub').textContent = P0.sub;
+
+      /* lanes, via the same work the toggle does. `setToggle` is the one thing that writes
+         `Settings[key]` — doing it here as well would be two writers for one value. */
+      if (Settings.lanes !== P0.lanes){
+        UI.setToggle($('tgLanes'), P0.lanes);
+        Run.lanes = P0.lanes;
+        UI.moves(P0.lanes && Game.state === 'play');
+        if (!P0.lanes){ UI.moves(false); UI._cueOn = false; UI.cue.classList.remove('on'); }
+      }
+      /* exercise pool */
+      if (Settings.mode !== P0.mode){
+        Settings.mode = P0.mode;
+        for (const c of $('segMode').children) c.dataset.on = (c.dataset.v === P0.mode)?'1':'0';
+        Mode.retireOffPool();
+      }
+      /* the camera LAST, because it is the one that can fail. `null` means leave it alone: a preset
+         that does not need a camera should not switch one off that the player deliberately turned
+         on. Only FREE RUN requires it, and if permission is refused the preset says so rather than
+         leaving the player in a mode with no way to move. */
+      if (P0.camera === true && !Settings.camera){
+        const okCam = await Cam3.enable();
+        UI.setToggle($('tgCam'), !!okCam);
+        if (!okCam) $('presetSub').textContent = 'FREE RUN needs the camera — permission refused';
+      }
+      Cam3.syncCalOrder();
+      UI.refreshHints();
+    };
+    for (const child of $('segPreset').children){
+      child.addEventListener('click',(e)=>{ e.stopPropagation(); unfocus(e);
+        applyPreset(child.dataset.v); });
+    }
+
     /* Exercise mode. Live mid-run like the lanes toggle, because being able to switch without
        restarting is how you actually compare them. Two consequences have to be handled, not
        assumed away: a wall already in flight may demand an exercise the new mode does not
@@ -5792,7 +5855,7 @@ window.BR = { TUNING, LIVE, P, Belt, Game, In, Score, Quality, DBG, Post, PLAY, 
   simulate, updatePlayArea, stepPlayer, doJump, startDive, startRagdoll, spawnPattern, spawnZBase, getObstacle, PATTERNS, defNeedsDive, patternNeedsDive, retireUnanswerable,
   curPose, prevPose, FIXED, Ex, exPose, EX_NAMES, EX_SHORT, UI, TEX, world,
   Run, Coins, Walls, Moves, MOVE, Signal, RepDrive, TRACK, IS_LUNGE, beltDragNow, Cam3, Session,
-  MODES, Mode, BodyDrive,
+  MODES, Mode, BodyDrive, PRESETS,
   haltRender(v){ renderHalted = !!v; lastT = 0; acc = 0; },
   applyPoseNow(){ applyPose(renderPose, 1/60); },
   /* headless-test driver: advance the fixed-step simulation without waiting on rAF */

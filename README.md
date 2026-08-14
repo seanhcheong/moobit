@@ -345,7 +345,16 @@ covers both halves.
 
 ### The free run: the whole body as the controller
 
-Turn **3-lane fitness run** off with the camera on and `BodyDrive` takes the wheel. Cadence drives
+**Settings → Session → FREE RUN.** One tap, because the three settings that make up a session are not
+independent in practice and asking a player to work out that turning something OFF is how you turn a
+mode ON is a bad control surface — one I built by adding each capability as its own switch. The preset
+applies camera on, lanes off, squats only, through exactly the same code paths the individual toggles
+use, so there is one implementation of each change rather than two that can disagree. The individual
+switches stay live afterwards; a preset is a shortcut, not a mode the rest of the code knows about.
+
+`LANES` is the other preset and the default: three lanes, mixed exercises, lunge to change lane.
+
+With the camera on and lanes off, `BodyDrive` takes the wheel. Cadence drives
 you forward, where you stand steers. It only produces `ix` and `iz` — the same two axes a keyboard
 produces — so all of `TUNING.move` applies unchanged: 0.21s to top speed, 0.30s of skid, the bank
 into a turn, the lean into acceleration. No physics is special-cased for a camera, and a keypress on
@@ -383,7 +392,16 @@ Two bugs worth recording, because both were stable-and-wrong rather than obvious
   anyway, and `topSpeed`'s own comment already says it is *"deliberately just under the mid-game belt
   speed"*. Reverted.
 
-`drive.mjs` (34 assertions) covers it, mutation-tested four ways — dropping the rep hold, making
+**Cadence is on screen, and that is not decoration.** `#cadChip` reports steps per minute with a
+throttle bar under it. Without it, "I am running and nothing is happening" and "the detector cannot
+see my feet" are the same experience from where the player stands — the same silence that made
+rejected reps unreadable. The bar reads the *throttle* rather than the cadence, so it shows the hold
+through a rep, which is the one moment the two disagree on purpose. Sized at 46px because a 13px chip
+subtends about 2 arcminutes at 2.5m.
+
+`preset.mjs` (20 assertions) covers the session control, including that a preset leaves the
+individual switches consistent and still usable, and that `LANES` does not switch off a camera the
+player deliberately enabled. `drive.mjs` (34 assertions) covers the drive, mutation-tested four ways — dropping the rep hold, making
 steering a throttle instead of a position error, letting the centre chase a deliberate step, and
 dropping the throttle release on tracking loss.
 
