@@ -149,6 +149,18 @@ export const CONFIG = {
     altGate: 0.045,
   },
 
+  /* ---- crouch: a CONTROL, not a rep ------------------------------------------------------
+     Read from the STRAIGHTER knee, because running in place bends one knee at a time and locks the
+     other out at 171-180 degrees while a crouch bends both. Measured separation is 65 degrees, so
+     these thresholds sit in wide open space rather than being squeezed between two distributions.
+     Hysteresis because this drives a duck: a control that chatters at its own threshold is worse
+     than one that is slightly slow to release. */
+  crouch: {
+    enterKnee: 140,        // deg — straighter knee below this and you are crouching
+    exitKnee: 152,         // deg — and back above this to stand up again
+    minMs: 90,             // ms of holding it before it counts, so a stumble is not a duck
+  },
+
   /* ---- 1: push-up — the hard one ----------------------------------------------------- */
   /* The phone is on the floor in FRONT of the player, angled up. That solves framing but not
      legibility: the torso points away from the lens, so the shoulder-to-hip vector projects

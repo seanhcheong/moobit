@@ -392,6 +392,32 @@ Two bugs worth recording, because both were stable-and-wrong rather than obvious
   anyway, and `topSpeed`'s own comment already says it is *"deliberately just under the mid-game belt
   speed"*. Reverted.
 
+#### The movement check
+
+`#cadChip` shows all four inputs at once: steps per minute, the throttle bar, signed steering, and
+JUMP / DUCK lamps. It exists so a player can prove each movement is being read *before* trusting any
+of it in a game — the same reason rejected-rep reasons had to reach the screen. JUMP latches for
+~0.3s because a jump is an edge and one lit frame at 60Hz is invisible.
+
+#### Steering rides the player's footfalls, and had to be low-passed
+
+Running in place rocks the pelvis, and `hipX` *is* the lateral position of the hip centre — so the
+steering signal was riding the running motion. Every steering assertion had fed a **constant**
+`hipX`, which is why this was invisible. Measured on a runner with a realistic pelvis rock, the hip
+centre swings ±0.175 against what was then a 0.08 deadzone — 2.2× past it, alternating at footfall
+rate; a heavier sway reached ±0.334, half of full lateral input twice a second. End to end, that was
+0.85 units of unwanted drift at a normal rock and **4.65 units at a heavy sway**. The penguin weaved
+in time with the player's feet, and that is what "glitchy and unpredictable" was.
+
+The wobble is periodic and symmetric about the player's true position, so the mean *is* the intent
+and averaging is both cheap and correct. `steerTau: 0.50` — comfortably above a 385ms footfall —
+takes the measured drift to **0.000** at every sway amplitude, while a deliberate step still arrives
+in 0.80s. Verified by mutation: with smoothing off the 4.65 comes back, and with the deadzone
+returned to 0.08 but smoothing on it stays clean, so the smoothing is the fix and the wider deadzone
+is margin.
+
+#### The crouch, and why it is the straighter knee
+
 **Cadence is on screen, and that is not decoration.** `#cadChip` reports steps per minute with a
 throttle bar under it. Without it, "I am running and nothing is happening" and "the detector cannot
 see my feet" are the same experience from where the player stands — the same silence that made

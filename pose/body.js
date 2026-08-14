@@ -45,6 +45,8 @@ export function makeBody(){
     shoulderW:1, torsoLen:1, legLen:1,
     /* joint angles, degrees, from the metric frame */
     kneeL:180, kneeR:180, knee:180,
+    /* the straighter of the two knees — a crouch bends both, running only ever bends one */
+    kneeStraight:180,
     elbowL:180, elbowR:180, elbow:180,
     torsoTilt:0,        // deg from vertical: 0 = upright
     torsoHoriz:90,      // deg from horizontal: 0 = flat on the floor
@@ -69,6 +71,9 @@ export function makeBody(){
     /* published by run.js: steps per second, and whether that is above zero. A rate rather than a
        count, because what the game wants from running in place is how hard you are working now. */
     cadence:0, running:false,
+    /* published by crouch.js: are you down right now. A LEVEL, because a duck the player is
+       still holding when the obstacle arrives has to keep counting. */
+    crouching:false,
     /* ms since the torso was last nearer horizontal than vertical — how a burpee's finishing hop
        is told apart from a deliberate jump */
     msSinceProne:60000,
@@ -121,6 +126,21 @@ export function readBody(body, frame, cal){
   body.kneeL = angleAt(W[LM.HIP_L], W[LM.KNEE_L], W[LM.ANKLE_L]);
   body.kneeR = angleAt(W[LM.HIP_R], W[LM.KNEE_R], W[LM.ANKLE_R]);
   body.knee  = (body.kneeL + body.kneeR)*0.5;
+  /* THE STRAIGHTER KNEE — how a crouch is told from running in place.
+
+     A crouch bends BOTH knees. Running in place bends one at a time and stands on the other, and
+     that stance leg locks out HARDER than a relaxed stand: measured 171-180 degrees while running
+     against 167 standing. So the maximum stays high through a run and collapses through a crouch —
+     106 for the shallowest duck worth answering, 90 for a real crouch, 70 for a full squat. That is
+     65 degrees of clear air between the two movements.
+
+     Same shape as the other two arbitrations in this layer: `jump.js` measures the LOWER ankle
+     because a jump lifts both, and `ankleSplit` is a differential because running alternates. One
+     joint up, the same idea. Every image-space alternative was tried first and failed — hip height
+     normalised by leg length inverted (a bending knee foreshortens the thigh), and normalised by
+     shoulder width it put running's hip dip at 0.061 against a crouch's 0.076, which no threshold
+     can separate. This comes from the metric frame, the trusted path for angles here. */
+  body.kneeStraight = Math.max(body.kneeL, body.kneeR);
   body.elbowL = angleAt(W[LM.SHOULDER_L], W[LM.ELBOW_L], W[LM.WRIST_L]);
   body.elbowR = angleAt(W[LM.SHOULDER_R], W[LM.ELBOW_R], W[LM.WRIST_R]);
   body.elbow  = (body.elbowL + body.elbowR)*0.5;

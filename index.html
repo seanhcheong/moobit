@@ -202,6 +202,15 @@
     background:rgba(255,255,255,.16);overflow:hidden}
   #cadFill{height:100%;width:0%;background:var(--mint);border-radius:3px;
     transition:width .09s linear}
+  /* THE MOVEMENT CHECK. Four inputs, one row, all lighting up independently, so a player can prove
+     to themselves that each movement is being read before trusting any of them in a game. This is
+     the same reason the rejected-rep reasons had to reach the screen: an input the player cannot
+     see being detected is indistinguishable from one that is broken. */
+  #mvRow{display:flex;gap:4px;justify-content:center;margin-top:5px}
+  #mvRow span{font-size:9px;letter-spacing:.1em;padding:3px 5px 4px;border-radius:7px;
+    background:rgba(255,255,255,.07);color:#7d8783;min-width:26px;text-align:center}
+  #mvRow span.lit{background:rgba(63,224,176,.28);color:#bff5e4}
+  #mvSteer{font-variant-numeric:tabular-nums;min-width:34px}
   #trackChip{position:absolute;left:50%;top:calc(58px + var(--sat));transform:translateX(-50%);
     padding:6px 15px 7px;border-radius:13px;font-size:12px;letter-spacing:.16em;
     background:rgba(16,22,38,.76);border:2px solid rgba(255,255,255,.18);opacity:0;
@@ -280,7 +289,8 @@
 
     <div id="roundChip">ROUND 1/10</div>
     <div id="cadChip"><div class="cadLbl">STEPS / MIN</div><div id="cadNum" class="num">0</div>
-      <div id="cadBar"><div id="cadFill"></div></div></div>
+      <div id="cadBar"><div id="cadFill"></div></div>
+      <div id="mvRow"><span id="mvSteer">–</span><span id="mvJump">JUMP</span><span id="mvDuck">DUCK</span></div></div>
 
     <div id="wallCue">
       <div id="wallEx" class="num">SQUAT</div>
@@ -667,11 +677,32 @@ const TUNING = {
     cadFull: 3.0,        // steps/s that earns full throttle
     holdRep: true,       // hold the throttle while rep progress is arriving
     span: 0.55,          // x shoulderWidth of hip travel = the edge of the play area
-    dead: 0.08,          // x shoulderWidth of slop around centre, so standing still does not drift
+    /* STEERING IS LOW-PASSED, and this is the single most important number in the block.
+
+       Running in place rocks the pelvis, and `hipX` IS the lateral position of the hip centre — so
+       the steering signal rides the running motion. Measured on a runner with a realistic pelvis
+       rock, the hip centre swings +/-0.175 against a 0.08 deadzone: 2.2x past it, alternating at
+       footfall rate. A heavier sway reached +/-0.334, which is half of full lateral input twice a
+       second. That is the penguin weaving left and right in time with the player's feet, and it is
+       what "glitchy and unpredictable" felt like.
+
+       The wobble is periodic and symmetric about the player's true position, so averaging it out is
+       both cheap and correct — the mean IS the intent. A footfall at 2.6 steps/s is 385ms, so a
+       constant well above that attenuates the ripple hard while a deliberate step aside still
+       arrives in well under a second. This deliberately costs steering responsiveness: a lateral
+       input that answers footfalls is worse than one that answers slowly. */
+    steerTau: 0.50,      // s — low-pass on the steering signal, sized against the footfall period
+    dead: 0.14,          // x shoulderWidth of slop around centre. Wider than the 0.08 it started at
+                         // because the quietest runner measured still swings 0.070, and a deadzone
+                         // the same size as the noise is not a deadzone.
     settle: 0.9,         // world units of position error that earns full lateral input
     centreTau: 6.0,      // s — the self-seeded centre follows you drifting, slowly
     centreHold: 0.35,    // x shoulderWidth beyond which the centre stops tracking, so a
                          // deliberate step aside is never mistaken for a new home position
+    /* How far ahead a dive-required obstacle has to be for a crouch to mean "duck" rather than
+       "I am doing a squat". A deep squat is geometrically a crouch, so without this every rep would
+       throw the penguin prone mid-exercise into a state where input is ignored. */
+    duckLead: 16,        // world units ahead
   },
 
   /* ---- the HIIT session ---------------------------------------------------------------
@@ -3455,10 +3486,13 @@ const BodyDrive = {
   on:false,                    /* is a camera currently driving the axes? */
   cad:0,                       /* last cadence reported, steps/s */
   thr:0,                       /* forward throttle 0..1, after the rep hold */
-  hipX:0, centre:0, haveCentre:false,
+  /* `hipRaw` is what the camera said this frame; `hipX` is that low-passed. Everything that steers
+     reads `hipX`, because the raw value carries the player's footfalls — see `steerTau`. */
+  hipRaw:0, hipX:0, centre:0, haveCentre:false,
   seenT:-99,                   /* s since the last camera frame — see step() */
 
-  reset(){ this.cad=0; this.thr=0; this.centre=0; this.haveCentre=false; this.seenT=-99; },
+  reset(){ this.cad=0; this.thr=0; this.hipRaw=0; this.hipX=0;
+           this.centre=0; this.haveCentre=false; this.seenT=-99; },
 
   /* Free run + camera. Lanes on means the lunge owns steering, and `Signal.laneChange` is gated
      on `Run.lanes` anyway, so the two schemes can never both be live. */
@@ -3467,18 +3501,26 @@ const BodyDrive = {
   /* the pose backend reports these every frame */
   setCadence(c){ this.cad = c; this.seenT = 0; },
   setHip(x){
-    this.hipX = x;
+    this.hipRaw = x;
     /* Self-seeded, like the jump machine's ankle baseline, and for the same reason: `hipX` is
        measured from the centre of the IMAGE, which is not where the player is standing, and
        demanding a calibration step for it would put a setup screen in front of the one control
-       that ought to be obvious. */
-    if (!this.haveCentre){ this.centre = x; this.haveCentre = true; }
+       that ought to be obvious.
+
+       The FIRST frame seeds both the smoothed value and the centre. Seeding only the centre would
+       leave `hipX` at 0 while the centre sat at 0.42, so the player would be commanded hard to one
+       side for the first half second of every run. */
+    if (!this.haveCentre){ this.centre = x; this.hipX = x; this.haveCentre = true; }
   },
 
   /* Forward throttle from cadence, with the rep hold. Called once per fixed step. */
   step(dt){
     if (!this.active()){ this.thr = 0; return; }
     this.seenT += dt;
+
+    /* Low-pass the steering signal here rather than in `setHip`, because camera frames arrive at
+       whatever rate the pipeline manages and this needs a real dt to be rate-independent. */
+    if (dt > 0) this.hipX += (this.hipRaw - this.hipX)*(1 - Math.exp(-dt/BD.steerTau));
 
     const raw = clamp01((this.cad - BD.cadIdle)/Math.max(0.01, BD.cadFull - BD.cadIdle));
     /* THE REP HOLD. Standing still to perform a rep must not cost the player ground, and the belt
@@ -3620,6 +3662,8 @@ const Signal = {
     if (!this.live()) return false;
     In.jumpEdge = true; In.jumpHeld = true;
     this.jumps = (this.jumps||0) + 1;
+    /* latch the movement-check indicator: a jump is an EDGE, and one lit frame at 60Hz is invisible */
+    UI.flashJump();
     return true;
   },
   jumpHold(v){ if (this.live()) In.jumpHeld = !!v; },
@@ -3662,7 +3706,37 @@ const Signal = {
     BodyDrive.setHip(hipX || 0);
     return true;
   },
+
+  /* ---- the crouch. A LEVEL: "are you down right now", not "you ducked just now". ----
+     `duck` already existed as the flag `canDive()` reads, and nothing ever set it — which is why
+     `retireUnanswerable()` has been quietly deleting the high bar for camera players.
+
+     CONTEXT-GATED ON PURPOSE. A deep squat crosses the crouch threshold, correctly: geometrically it
+     IS a crouch. But turning every squat rep into a dive would put the penguin prone in the middle
+     of the exercise the wall asked for, and DIVE is a locked state where input is ignored. So the
+     capability is always published and the DIVE is only triggered when something is actually there
+     to duck under — the same question `retireUnanswerable` already asks, from the other side. */
+  crouch(on){
+    const was = this.duck;
+    this.duck = !!on;
+    if (this.duck && !was && this.live() && duckWorthIt()) In.diveEdge = true;
+    return true;
+  },
 };
+
+/* Is there a dive-required obstacle close enough that ducking now is about that obstacle rather
+   than about a squat the player is performing for a wall? Reuses `defNeedsDive` so a new obstacle
+   is classified by its geometry the day it is added rather than by a list of names. */
+function duckWorthIt(){
+  for (let i=0;i<obsActive.length;i++){
+    const o = obsActive[i];
+    if (!o.alive) continue;
+    if (!defNeedsDive(OBS_DEF[o.type])) continue;
+    const d = P.z - o.z;                       /* ahead of us is positive */
+    if (d > 0 && d < TUNING.bodyDrive.duckLead) return true;
+  }
+  return false;
+}
 
 /* ---- the keyboard / button backend: one press becomes a whole rep, phase and all ---- */
 const RepDrive = {
@@ -4776,6 +4850,7 @@ const UI = {
     this.arc=$('wallArc'); this.arcCtx=this.arc.getContext('2d');
     this.trackChip=$('trackChip'); this.rejectMsg=$('rejectMsg'); this.roundChip=$('roundChip');
     this.cadChip=$('cadChip'); this.cadNum=$('cadNum'); this.cadFill=$('cadFill');
+    this.mvSteer=$('mvSteer'); this.mvJump=$('mvJump'); this.mvDuck=$('mvDuck');
     this._cueOn=false; this._cueKind=-1; this._cueLeft=-1; this._coins=-1;
     this._arcW=-1; this._track=''; this._rejectT=0;
     const wrap=$('popWrap');
@@ -5042,7 +5117,27 @@ const UI = {
        — including the hold through a rep, which is the one moment the two disagree on purpose */
     const w = Math.round(clamp01(BodyDrive.thr)*100);
     if (this._cadW !== w){ this._cadW = w; this.cadFill.style.width = w + '%'; }
+
+    /* Steering as a signed percentage of full lateral, so "am I being read as stepping left" has an
+       answer the player can watch. `ix()` rather than the raw hip offset, because what matters is
+       what the game is acting on after the low-pass and the deadzone. */
+    const sx = Math.round(BodyDrive.ix()*100);
+    if (this._mvSx !== sx){
+      this._mvSx = sx;
+      this.mvSteer.textContent = sx === 0 ? '–' : (sx > 0 ? '▶' : '◀') + Math.abs(sx);
+      this.mvSteer.classList.toggle('lit', sx !== 0);
+    }
+    /* JUMP latches briefly, because a jump is an edge and an indicator that flickers for one frame
+       at 60Hz cannot be seen. DUCK is a level and needs no latch. */
+    this._mvJumpT = Math.max(0, (this._mvJumpT || 0) - 1);
+    if (Signal.count !== this._mvJumpN){ this._mvJumpN = Signal.count; }
+    const jl = this._mvJumpT > 0;
+    if (this._mvJl !== jl){ this._mvJl = jl; this.mvJump.classList.toggle('lit', jl); }
+    const dk = !!Signal.duck;
+    if (this._mvDk !== dk){ this._mvDk = dk; this.mvDuck.classList.toggle('lit', dk); }
   },
+  /* called from the jump path, so the indicator latches long enough to be seen at 60Hz */
+  flashJump(){ this._mvJumpT = 18; },
   /* which interval you are in. Only changes on a real transition, so the text never strobes. */
   round(){
     const c = this.roundChip;

@@ -23,6 +23,7 @@ import * as Burpee from './burpee.js';
 import * as Lunge from './lunge.js';
 import * as Jump from './jump.js';
 import * as Run from './run.js';
+import * as Crouch from './crouch.js';
 
 export const TRACK = { GOOD:'good', DEGRADED:'degraded', LOST:'lost' };
 
@@ -50,6 +51,7 @@ export function create(){
     lunge: Lunge.create(),
     jumpM: Jump.create(),
     runM:  Run.create(),
+    crouchM: Crouch.create(),
     want: EX.JACK,              // which exercise the wall in front is asking for
     track: TRACK.GOOD,
     lastFrameT: -1e9, pushT: -1e9,
@@ -59,7 +61,7 @@ export function create(){
     ev: { progress:false, phase:0, completed:false, form:1, reject:'', lane:0,
           jump:false, jumpHold:null, live:false, liveU:0, liveW:0,
           /* running in place publishes a RATE every frame, and `step` only on a footfall */
-          cadence:0, step:false },
+          cadence:0, step:false, crouch:false },
     stats: { frames:0, progress:0, completed:0, rejected:0, lanes:0, lost:0, jumps:0, live:0, steps:0 },
   };
 }
@@ -161,10 +163,11 @@ export function push(d, res, tMs, sink){
   if (track === TRACK.LOST || !d.frame.valid){
     /* freeze everything rather than reasoning about a body we cannot see */
     for (const k in d.mach) d.mach[k].reset();
-    d.lunge.reset(); d.jumpM.reset(); d.runM.reset();
+    d.lunge.reset(); d.jumpM.reset(); d.runM.reset(); d.crouchM.reset();
     /* a stale cadence would keep driving the player forward while the camera cannot see them,
        which is the one failure worth being explicit about on this path */
     d.body.cadence = 0; d.body.running = false; ev.cadence = 0;
+    d.body.crouching = false; ev.crouch = false;
     return ev;
   }
 
@@ -187,6 +190,11 @@ export function push(d, res, tMs, sink){
      standing rather than by a gesture, so this is the raw offset and the game decides what centre
      it is relative to — the detector has no business knowing how wide the play area is. */
   if (sink && sink.steer) sink.steer(d.body.hipX);
+
+  /* The crouch is a level rather than an edge, and it is published every frame including through a
+     dropout, so the game always knows whether the player is currently down. */
+  Crouch.step(d.crouchM, d.body, d.cal, ev);
+  if (sink && sink.crouch) sink.crouch(ev.crouch);
 
   Lunge.step(d.lunge, d.body, d.cal, ev);
   if (ev.lane !== 0){
