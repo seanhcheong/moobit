@@ -24,6 +24,7 @@ import * as Lunge from './lunge.js';
 import * as Jump from './jump.js';
 import * as Run from './run.js';
 import * as Crouch from './crouch.js';
+import * as Smooth from './smooth.js';
 
 export const TRACK = { GOOD:'good', DEGRADED:'degraded', LOST:'lost' };
 
@@ -52,6 +53,7 @@ export function create(){
     jumpM: Jump.create(),
     runM:  Run.create(),
     crouchM: Crouch.create(),
+    smooth: Smooth.create(33),
     want: EX.JACK,              // which exercise the wall in front is asking for
     track: TRACK.GOOD,
     lastFrameT: -1e9, pushT: -1e9,
@@ -137,6 +139,10 @@ export function push(d, res, tMs, sink){
   ev.step = false;   /* ev.cadence is a level, not an edge, so it is NOT cleared here */
 
   adapt(d.frame, res, tMs);
+  /* Smooth the LANDMARKS, once, before anything reads them. Every derived signal in this layer was
+     already smoothed individually; the source they all share was not, so each consumer was fighting
+     the same jitter separately and anything nobody had filtered passed it into a command. */
+  Smooth.apply(d.smooth, d.frame);
   if (d.frame.valid) d.lastFrameT = tMs;
   d.stats.frames++;
 
@@ -168,6 +174,9 @@ export function push(d, res, tMs, sink){
        which is the one failure worth being explicit about on this path */
     d.body.cadence = 0; d.body.running = false; ev.cadence = 0;
     d.body.crouching = false; ev.crouch = false;
+    /* re-seed the filter: on the far side of a dropout the body may be somewhere else entirely,
+       and a filter carrying its old state would glide across the gap and invent motion */
+    Smooth.reset(d.smooth);
     return ev;
   }
 

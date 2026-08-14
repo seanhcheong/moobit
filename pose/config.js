@@ -102,7 +102,13 @@ export const CONFIG = {
     minUpVel: 0.004,       // per frame, must still be going up when it fires
     minAirMs: 140,
     maxAirMs: 1600,        // longer than this and the baseline was wrong; re-seed it
-    holdDecideMs: 110,     // how long to wait before judging whether it was a small jump
+    /* Widened from 110ms once the landmarks were filtered. 110ms is under three frames at 25fps,
+       which is faster than ANY adaptive filter can open its cutoff — so the big/small decision was
+       being taken while the filter was still catching up, and a big jump got judged small. That is
+       structural rather than a tuning miss: the window and the filter were racing.
+       Waiting costs a slightly later height determination. Not waiting cost 21-30 PHANTOM jumps per
+       20 seconds of standing still at realistic landmark noise. The trade is not close. */
+    holdDecideMs: 260,     // how long to wait before judging whether it was a small jump
     refractoryMs: 420,
     /* the standing baseline follows you slowly, and asymmetrically: quick to follow the ankle
        line down (you moved, or it was mis-seeded) and very slow to follow it up, so it cannot
@@ -136,7 +142,14 @@ export const CONFIG = {
      this file is: how far a foot appears to lift depends on the person, their effort and where the
      phone is sitting. See pose/run.js for the measurements these come from. */
   run: {
-    minSplit: 0.03,        // floor on the step threshold, x legLength — stops noise counting
+    /* Raised from 0.03/0.045 after MEASURING what noise does. A still body with realistic landmark
+       jitter produced 47 phantom steps at 0.004 of noise and 89 at 0.012, with a reported cadence
+       peak of 6.15 steps/s — the penguin sprinting while the player stands there. Smoothing removes
+       most of that, but the remainder was almost entirely steps, because these two floors sat close
+       enough to the noise to be crossed by it.
+       There is room: a quiet real runner measured `ankleAlt` 0.107 at a 9cm knee lift, so 0.07 still
+       leaves 1.5x of margin on the movement that matters. */
+    minSplit: 0.05,        // floor on the step threshold, x legLength — stops noise counting
     thFrac: 0.50,          // step threshold as a fraction of `ankleAlt` (≈25% of peak-to-peak)
     rearmFrac: 0.40,       // fall back inside this fraction of the threshold to arm that side again
     minStepMs: 140,        // ~7 steps/s ceiling; faster is jitter, not footwork
@@ -146,7 +159,38 @@ export const CONFIG = {
        read exactly 0.000 because a synthetic body is symmetric; a real one is not, so THIS IS THE
        FIRST NUMBER TO CHECK AGAINST A REAL BODY. Running measured 0.107 at a 9cm knee lift and
        0.180 at 14cm, so there is room, but the floor of that range is only ~2x this gate. */
-    altGate: 0.045,
+    altGate: 0.07,
+  },
+
+  /* ---- landmark smoothing ------------------------------------------------------------------
+     A One Euro filter on the landmarks themselves. See pose/smooth.js for why it is adaptive rather
+     than a fixed average: this project fires jumps at takeoff and drives the penguin from live pose
+     specifically to avoid lag, and a constant heavy enough to kill jitter would hand all of that back.
+
+     `fcMin` is the cutoff when a landmark is still — lower is smoother and laggier at rest. `beta`
+     is how fast the cutoff opens with speed. Both are the standard knobs; these values are a
+     starting point and the first thing to adjust if a real body still reads noisy. */
+  smooth: {
+    on: true,
+    fcMin: 1.6,           // Hz — cutoff at rest
+    /* Raised from 0.06 after measuring the cost. At 0.06 the filter lagged a jump's rise enough that
+       the hold-decide window judged a BIG jump as small — dropping the hold 3 times mid-air on a jump
+       that should keep it. That is precisely the latency this filter was supposed to avoid paying, so
+       the cutoff has to open faster with speed. Fast movement is also far above the noise, so there is
+       nothing to protect there. */
+    beta: 0.9,
+    /* Raised from the textbook 1.0. That value throttles how fast the filter LEARNS that motion has
+       started, and a jump is the fastest thing the body does: at 1.0 the adaptive term was still
+       catching up while the player was already airborne, so the hold-decide window judged a big jump
+       as small and the forward drive collapsed mid-jump. Measured cost at 1.0 vs 4.0 below. */
+    dCutoff: 4.0,         // Hz — cutoff on the derivative term
+    /* VISIBILITY IS NOT SMOOTHED, and that was a mistake worth recording. The intent was to stop a
+       confidence value flickering across a gate — but `trackOf` already solves that properly with
+       `lostDwellMs`/`foundDwellMs` hysteresis, so this duplicated it, and averaging confidence
+       UPWARD let a marginal framing setup pass the arms-overhead check it exists to fail. A framing
+       check has to see the raw number: catching a clipped wrist is its entire job. */
+    smoothVis: false,
+    worldScale: 0.25,     // metric-frame speeds are numerically larger; put beta on one footing
   },
 
   /* ---- crouch: a CONTROL, not a rep ------------------------------------------------------

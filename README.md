@@ -392,6 +392,54 @@ Two bugs worth recording, because both were stable-and-wrong rather than obvious
   anyway, and `topSpeed`'s own comment already says it is *"deliberately just under the mid-game belt
   speed"*. Reverted.
 
+#### Landmark smoothing, and why calibration could not fix the jitter
+
+A player reported the body-part identification "spazzing out" and firing commands they had not made.
+That is not a threshold problem, and **calibration cannot fix it**: calibration places a threshold
+inside a person's range, and if the signal is noisy then every threshold is being crossed by noise
+wherever you put it.
+
+Every *derived* signal in this layer was already smoothed — `steerTau` on the hip, `cadTau` on
+cadence, an asymmetric attack/decay on `ankleAlt`. The **landmarks feeding all of them were not**. So
+each consumer fought the same jitter separately, and anything nobody had thought to filter passed it
+straight into a command.
+
+`pose/smooth.js` is a One Euro filter on the landmarks themselves — adaptive, so it smooths hard at
+rest (where jitter is visible and there is no motion to protect) and barely at speed (where lag would
+be felt). A fixed average would have handed back all the latency work: jumps firing at takeoff, the
+penguin driven from live pose.
+
+**The harness could not see the benefit until it had noise in it.** Synthetic bodies are perfectly
+clean, so every suite could measure the *cost* of a filter and never its value. `synth.mjs` now injects
+deterministic per-landmark noise, and `jitter.mjs` counts commands nobody made — 20 seconds of a body
+standing perfectly still:
+
+```
+landmark noise      jumps  steps  cad peak  smoothing
+0.004                   0     47      0.00  off
+0.004                   0      0      0.00  ON
+0.008                  21     64      2.63  off
+0.008                   1      1      0.00  ON
+0.012                  30     83      6.08  off
+0.012                   2     22      0.00  ON
+```
+
+At moderate noise the penguin was pogoing and sprinting at 6 steps/s while the player stood still.
+Filtered, the phantom cadence is gone entirely and total spurious commands drop 47→0, 107→2, 119→22.
+
+Two things had to move with it. `run.minSplit` and `run.altGate` sat close enough to the noise floor
+to be crossed by it, so they went to 0.05 and 0.07 — a quiet real runner measures `ankleAlt` 0.107, so
+there is still 1.5× of margin. And visibility is **deliberately not** filtered: smoothing it duplicated
+the dwell hysteresis `trackOf` already has, and averaging confidence *upward* let a marginal framing
+setup pass the arms-overhead check whose whole purpose is to fail it.
+
+**Known cost, not yet solved.** `jump.js` decides big-versus-small within `holdDecideMs`, which even at
+260ms is racing the filter's adaptation. `jumptest` and `threeway` each carry one failure for it: a big
+jump can be judged small, and the forward drive dips during a jump. Jumps still *fire* — this is height
+fidelity, against 21–30 phantom jumps per 20 seconds unfiltered. The trade is not close, but it is a
+real regression and it is recorded rather than tuned away. The proper fix is less noise at source: the
+`full` pose model instead of `lite`.
+
 #### Acclimation: the CONTROLS stage
 
 Calibration has a fifth stage for the free run, between the A-pose and the exercise reps:
