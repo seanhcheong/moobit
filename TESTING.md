@@ -106,16 +106,41 @@ Things I expect to bite on the phone, so worth watching for:
 
 ## 5. If you want to help me tune
 
-Open `posecheck.html`, press **Record**, do 10–20 reps, press it again, then **Save JSON**.
+This is the one thing I genuinely cannot do without you. Every threshold in `pose/config.js` is a
+plausible shape verified against synthetic bodies — good enough to prove the machines behave, not
+proof that any number matches a real person.
 
-That writes the **landmark stream only** — 33 coordinate triples per frame plus timestamps. No
-pixels are captured, stored or transmitted, by that page or by the game. Send me the file and I
-can replay it through the state machines here, at real speed, headless, and tune thresholds
-against your actual movement instead of my model of a body.
+**In the game.** Settings → **Record movement**, close the panel, do the thing that misbehaves, then
+tap the red **RECORDING** chip in the top right. A `belt-trace-….json` lands in your downloads. On a
+laptop, **F2** starts and stops it without opening Settings, which matters when both hands are busy
+being a body.
 
-That is the one thing I genuinely cannot do without you. Every threshold in `pose/config.js` is
-currently a plausible shape verified against synthetic bodies — good enough to behave correctly,
-not yet proven to match a real person.
+It records the **landmark stream only** — 33 coordinate triples per frame plus visibility, the
+metric frame, and what the detector concluded about each one. No pixels are captured, stored or
+transmitted by any page here. That is not a concession: the detector never sees pixels either, so
+the numbers are its *complete* input, and video would record something no threshold depends on.
+
+Two things worth knowing. It keeps the **last 90 seconds**, so noticing a glitch and then reaching
+for the chip still captures what caused it — you do not have to predict it. And it will not record
+during calibration, because the calibrator rewrites your body fit on every frame and a trace carries
+only one.
+
+`posecheck.html`'s **Record** / **Save JSON** buttons write the same format, for tuning one exercise
+in isolation.
+
+**What I do with it.** Replay it offline through the same detector the camera drives:
+
+```bash
+node scripts/replay-trace.mjs belt-trace-….json
+```
+
+That reports your camera's actual noise floor, how many commands a *motionless* body produced, where
+every threshold sits against the range your body actually covered, and — first, before anything else
+— whether the replay reproduces your live session at all. If it does not, the tool is lying and
+nothing below it counts. `--set smooth.fcMin=2.4` re-runs the whole thing under different constants,
+so a candidate fix gets judged against a movement you really performed rather than one I invented.
+
+Traces are gitignored. It is your movement data; send it or don't.
 
 ---
 

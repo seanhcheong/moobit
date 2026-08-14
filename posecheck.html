@@ -174,8 +174,12 @@ const S = Src.create();
 let want = EX.JACK;
 let accepted = 0, refused = 0, lanes = 0;
 let msgT = 0;
-let recording = false;
-const recorded = [];          /* landmarks only, never pixels. See the note on Save. */
+/* Recording lives in `pose/record.js` and is driven through the detector, rather than being a second
+   implementation here. This page had its own: an array of image-space landmarks, no world landmarks,
+   no config snapshot, and no record of what the detector concluded. Every joint angle in this layer
+   comes from the METRIC frame, so a trace without world landmarks cannot answer a single question
+   about a knee or an elbow — which is most of them. Worse, two formats means the replay script reads
+   one and rejects the other, and the person sending a file has no way to know which they made. */
 
 /* the bones we draw. Purely for the operator: a skeleton you can see is the difference between
    "it is broken" and "you are standing too close". */
@@ -225,13 +229,19 @@ function flash(text, colorVar){
 /* ---- results in ------------------------------------------------------------------------ */
 S.onResult = (res, t)=>{
   Src.unletterbox(S, res);
-  if (recording && res && res.landmarks && res.landmarks[0]){
-    /* landmarks only — coordinates and confidences. No pixels are captured, stored or sent. */
-    recorded.push({ t: Math.round(t), lm: res.landmarks[0].map(p=>[
-      +p.x.toFixed(4), +p.y.toFixed(4), +p.z.toFixed(4), +(p.visibility||0).toFixed(3)]) });
-    if (recorded.length % 25 === 0) $('bRec').textContent = 'Recording ' + recorded.length;
-  }
+  PCtick(res, t);
+};
+
+/* The internals, reachable from the console and from a headless driver. This is a diagnostic page —
+   its whole reason for existing is that something in the detection layer is misbehaving and needs
+   looking at directly — so being able to feed it a known body and inspect what came out is the
+   feature, not a hole in it. `index.html` deliberately exposes nothing like this. */
+function PCtick(res, t){
   Det.push(D, res, t, sink);
+  if (Det.recording(D)){
+    const st = Det.recStats(D);
+    $('bRec').textContent = 'Recording ' + st.frames + ' · ' + st.seconds.toFixed(0) + 's';
+  }
   if (C.stage !== Cal.STAGE.IDLE && C.stage !== Cal.STAGE.DONE){
     Cal.step(C, D.frame, D.body, null);
     if (C.stage === Cal.STAGE.REPS){
@@ -244,7 +254,9 @@ S.onResult = (res, t)=>{
   }
   paint();
   readout();
-};
+}
+window.PC = { get S(){ return S; }, get D(){ return D; }, get C(){ return C; },
+              Det, Cal, Src, tick: PCtick, ex: ()=>want };
 S.onError = (e)=>{ flash('ERR ' + e.message, '--bad'); console.error(e); };
 
 /* ---- overlay --------------------------------------------------------------------------- */
@@ -386,22 +398,37 @@ $('bReset').addEventListener('click', ()=>{
   D.lunge.reset();
 });
 
-/* the landmark recorder from Part H: numbers, never pixels, and off by default */
+/* the landmark recorder: numbers, never pixels, and off by default. Same module and same file format
+   the game uses, so `scripts/replay-trace.mjs` reads whichever page a trace came from. */
 $('bRec').addEventListener('click', ()=>{
-  recording = !recording;
-  $('bRec').classList.toggle('on', recording);
-  $('bRec').textContent = recording ? 'Recording 0' : 'Record';
-  $('bSave').classList.toggle('hide', recorded.length === 0);
+  if (Det.recording(D)){
+    Det.stopRecording(D);
+    $('bRec').classList.remove('on');
+    $('bRec').textContent = 'Record';
+    $('bSave').classList.toggle('hide', Det.recStats(D).frames === 0);
+    return;
+  }
+  Det.startRecording(D, {
+    seconds: 120,
+    note: 'posecheck / ' + EX_NAME[want],
+    meta: { calibration: D.cal,
+            device: { ua: navigator.userAgent, mode: S.mode, delegate: S.delegate,
+                      w: S.video ? S.video.videoWidth : 0, h: S.video ? S.video.videoHeight : 0 } },
+  });
+  $('bRec').classList.add('on');
+  $('bRec').textContent = 'Recording 0';
+  $('bSave').classList.add('hide');
 });
 $('bSave').addEventListener('click', ()=>{
-  const blob = new Blob([JSON.stringify({
-    note:'landmark stream only — no pixels were captured or stored',
-    exercise: EX_NAME[want], calibration: D.cal, frames: recorded,
-  })], { type:'application/json' });
+  const tr = Det.recTrace(D);
+  if (!tr || !tr.frames.length) return;
+  const blob = new Blob([JSON.stringify(tr)], { type:'application/json' });
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = 'pose-' + EX_NAME[want] + '-' + recorded.length + 'f.json';
-  a.click();
+  const url = URL.createObjectURL(blob);
+  a.href = url;
+  a.download = 'belt-trace-' + EX_NAME[want] + '-' + tr.frames.length + 'f.json';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url), 30000);
 });
 
 /* keep browser gestures out of the way on a phone */

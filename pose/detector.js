@@ -25,6 +25,7 @@ import * as Jump from './jump.js';
 import * as Run from './run.js';
 import * as Crouch from './crouch.js';
 import * as Smooth from './smooth.js';
+import * as Record from './record.js';
 
 export const TRACK = { GOOD:'good', DEGRADED:'degraded', LOST:'lost' };
 
@@ -54,6 +55,8 @@ export function create(){
     runM:  Run.create(),
     crouchM: Crouch.create(),
     smooth: Smooth.create(33),
+    /* the trace recorder, off and unallocated until somebody asks for it — see record.js */
+    rec: null,
     want: EX.JACK,              // which exercise the wall in front is asking for
     track: TRACK.GOOD,
     lastFrameT: -1e9, pushT: -1e9,
@@ -77,6 +80,23 @@ export function setWant(d, kind){
 }
 
 export function setCalibration(d, cal){ d.cal = cal; }
+
+/* ---- trace recording -------------------------------------------------------------------
+   Fitting a threshold to a real body needs the real body's numbers, and nothing in this layer
+   could previously produce them: a session's landmarks existed for one frame and were then
+   overwritten. `record.js` explains what is captured and why it is captured raw. */
+export function startRecording(d, opts){
+  if (d.rec) Record.clear(d.rec); else d.rec = Record.create(opts);
+  d.rec.on = true;
+  if (opts && opts.meta) d.rec.meta = opts.meta;
+  if (opts && opts.note !== undefined) d.rec.note = opts.note;
+  return d.rec;
+}
+export function stopRecording(d){ if (d.rec) d.rec.on = false; return d.rec; }
+export function recording(d){ return !!(d.rec && d.rec.on); }
+export function recStats(d){ return d.rec ? Record.stats(d.rec) : { frames:0, seconds:0, dropped:0, fps:0, bytes:0 }; }
+export function recTrace(d){ return d.rec ? Record.toTrace(d.rec) : null; }
+export function recClear(d){ if (d.rec) Record.clear(d.rec); }
 
 /* ---- tracking state, from the landmarks the ACTIVE exercise needs, not all 33 ----------
 
@@ -130,8 +150,23 @@ function trackOf(d, tMs, dt){
           every machine reasons in milliseconds, never in frame counts, so a variable
           inference rate cannot change what counts as a rep
    `sink` { laneChange, repProgress, repCompleted, poseLive, trackingState } — the game's contract
+
+   The recorder brackets the real work rather than living inside it, because `pushCore` returns
+   early on a lost body and on an unreadable one — and those are exactly the frames somebody
+   reporting a dropout needs. Bracketing catches every path; a call placed at the end would omit
+   the evidence. One branch on a null field when recording is off.
 */
 export function push(d, res, tMs, sink){
+  if (d.rec && d.rec.on){
+    Record.input(d.rec, res, tMs);
+    const ev = pushCore(d, res, tMs, sink);
+    Record.output(d.rec, d, ev);
+    return ev;
+  }
+  return pushCore(d, res, tMs, sink);
+}
+
+function pushCore(d, res, tMs, sink){
   const ev = d.ev;
   ev.progress = false; ev.phase = 0; ev.completed = false; ev.form = 1;
   ev.reject = ''; ev.lane = 0; ev.jump = false; ev.jumpHold = null;

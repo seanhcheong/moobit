@@ -36,6 +36,30 @@ The pose modules are **lazy-loaded**, so `index.html` still opens straight off d
 runs in a sandbox with no camera — nothing is imported until you turn the camera on, and a
 failure to load leaves the keyboard game completely untouched.
 
+### Recording a real body, because every threshold here was fitted to a synthetic one
+
+The numbers in [`pose/config.js`](pose/config.js) were fitted against anatomical skeletons projected
+through a pinhole camera in plain Node. That harness is deterministic, runs in milliseconds and has
+caught real bugs — but a synthetic body is a body somebody invented, and so is its noise. Real
+landmark noise is correlated across joints, worsens in dim light, and spikes when a limb crosses the
+torso. None of that is in the model.
+
+So the detector can record itself. Settings → **Record movement** (or **F2**), move, then tap the
+**RECORDING** chip; [`pose/record.js`](pose/record.js) writes the landmark stream — never pixels,
+because pixels are not what the detector reads — and replay enters through the same
+`detector.push` the camera drives:
+
+```bash
+node scripts/replay-trace.mjs belt-trace-….json
+node scripts/replay-trace.mjs belt-trace-….json --set smooth.fcMin=2.4   # A/B a candidate fix
+```
+
+The report leads with a **fidelity check** — replay against what the live session recorded alongside
+the landmarks — because a measuring instrument that quietly disagrees with reality is worse than no
+instrument, and this project has been misled by its own harnesses more than once. Then the camera's
+noise floor, the commands a motionless body produced, and where each threshold sits against the range
+the body actually covered. [`TESTING.md`](TESTING.md#5-if-you-want-to-help-me-tune) walks through it.
+
 ### "Importing a module script failed"
 
 That is Safari's wording (Chromium says "Failed to fetch dynamically imported module") and it

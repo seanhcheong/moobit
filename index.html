@@ -217,6 +217,28 @@
   #cadChip.practice{border-color:rgba(255,214,138,.5)}
   #cadChip.practice .cadLbl{color:#ffd68a;opacity:.9}
   #mvSteer{font-variant-numeric:tabular-nums;min-width:34px}
+  /* THE RECORDING CHIP. Tappable, and it has to be, because the whole flow is: arm it in Settings,
+     close the panel, perform the movement, stop it. If stopping meant reopening Settings then the
+     last thing in every trace would be a player walking back to the phone, which is noise recorded
+     over the top of the interesting part. Red, top-right, deliberately unmissable — a recorder the
+     player forgets is running is a privacy problem as well as a 40MB download. */
+  /* `pointer-events:auto` is load-bearing, not decoration: #hud is pointer-events:none so that the
+     WebGL canvas underneath receives steering and jumps, which means anything in the HUD meant to be
+     TAPPED has to opt back in. Without it the chip renders, looks clickable, and silently is not —
+     the canvas takes the tap and the player steers instead of saving. */
+  #recChip{position:absolute;right:calc(14px + var(--sar));top:calc(112px + var(--sat));
+    display:none;padding:7px 12px 8px;border-radius:14px;text-align:right;cursor:pointer;
+    background:rgba(38,12,14,.72);border:1px solid rgba(255,120,120,.55);
+    backdrop-filter:blur(6px);z-index:8;pointer-events:auto}
+  #recChip.on{display:block}
+  #recChip .recTop{display:flex;align-items:center;gap:6px;justify-content:flex-end}
+  #recDot{width:9px;height:9px;border-radius:50%;background:#ff5d5d;animation:recPulse 1.1s infinite}
+  @keyframes recPulse{0%,100%{opacity:1}50%{opacity:.25}}
+  #recChip .recLbl{font-size:10px;letter-spacing:.16em;color:#ffb4b4}
+  #recStat{font-size:11px;letter-spacing:.06em;opacity:.75;margin-top:2px;
+    font-variant-numeric:tabular-nums}
+  #recHint{font-size:9px;letter-spacing:.08em;opacity:.5;margin-top:1px}
+  #recSub{font-size:10px;letter-spacing:.08em;opacity:.55;margin:-2px 0 8px;text-align:right}
   #trackChip{position:absolute;left:50%;top:calc(58px + var(--sat));transform:translateX(-50%);
     padding:6px 15px 7px;border-radius:13px;font-size:12px;letter-spacing:.16em;
     background:rgba(16,22,38,.76);border:2px solid rgba(255,255,255,.18);opacity:0;
@@ -302,6 +324,12 @@
       <div id="wallEx" class="num">SQUAT</div>
       <div id="wallReps" class="lbl">3 TO GO</div>
       <canvas id="wallArc" width="120" height="10"></canvas>
+    </div>
+
+    <div id="recChip">
+      <div class="recTop"><div id="recDot"></div><div class="recLbl">RECORDING</div></div>
+      <div id="recStat">0.0s · 0</div>
+      <div id="recHint">TAP TO SAVE</div>
     </div>
 
     <div id="trackChip">TRACKING</div>
@@ -405,6 +433,8 @@
           <div data-v="mixed" data-on="1">MIXED</div><div data-v="legs">LEGS</div>
         </div>
       </div>
+      <div class="row"><span>Record movement</span><div class="toggle" id="tgRec" data-on="0"></div></div>
+      <div id="recSub">off</div>
       <div class="row"><span>Auto-run</span><div class="toggle" id="tgAuto" data-on="0"></div></div>
       <div class="row"><span>Sound</span><div class="toggle" id="tgSound" data-on="1"></div></div>
       <div class="row"><span>Shake</span><div class="toggle" id="tgShake" data-on="1"></div></div>
@@ -3959,6 +3989,10 @@ const Cam3 = {
   },
 
   disable(){
+    /* Save rather than discard: turning the camera off after performing the movement is a perfectly
+       natural way to finish, and losing the trace at that point would be losing the whole point of
+       having recorded it. */
+    if (this.det && this.Det && this.Det.recording(this.det)) this.recSave();
     if (this.src && this.Src) this.Src.closeCamera(this.src);
     this.on = false; this.ready = false;
     if (this.pip) this.pip.classList.remove('on');
@@ -4040,6 +4074,7 @@ const Cam3 = {
       }
     }
     this.paintPip();
+    this.recPaint(false);
   },
 
   /* calibration consumes reps itself, so it gets its own sink rather than the game's */
@@ -4129,6 +4164,106 @@ const Cam3 = {
     }
     $('pipTag').textContent = this.mode + '/' + this.delegate + '  ' +
       Math.round(this.inferMs) + 'ms';
+  },
+
+  /* ---- TRACE RECORDING -----------------------------------------------------------------
+     Every threshold in `pose/config.js` was fitted against synthetic bodies. This is how a real
+     one gets measured instead: record the landmark stream, hand over the file, replay it offline
+     through the same `detector.push` the camera drives. `pose/record.js` covers what is captured
+     and why it is captured raw; `scripts/replay-trace.mjs` is the other end.
+
+     Landmarks, not video — 33 points per frame. That is not a compromise for privacy's sake, it is
+     the complete input to the detector: recording pixels would capture something no threshold
+     depends on, and would be the one artifact here that could identify a person or their room. */
+  recPaintT: 0,
+
+  recStart(){
+    if (!this.ready || !this.det){
+      UI.reject('TURN THE CAMERA ON FIRST');
+      return false;
+    }
+    /* Not during calibration. The calibrator rewrites the body fit on every frame as it learns you,
+       and a trace carries ONE fit — so a recording spanning onboarding would be replayed under the
+       final numbers while the live session used a moving target. It would fail its own fidelity
+       check for a reason that has nothing to do with the thing being diagnosed. */
+    const calibrating = this.cal && this.Cal &&
+      this.cal.stage !== this.Cal.STAGE.IDLE && this.cal.stage !== this.Cal.STAGE.DONE;
+    if (calibrating){
+      UI.reject('FINISH CALIBRATION FIRST');
+      return false;
+    }
+    this.Det.startRecording(this.det, {
+      /* 90s at 30fps. A ring, so a longer session keeps the most recent 90 rather than refusing
+         to record — see record.js for why the most recent is the useful end. */
+      seconds: 90,
+      note: [Settings.mode, Run.lanes ? 'lanes' : 'free run',
+             Settings.hiit ? 'hiit' : 'endless'].join(' / '),
+      meta: {
+        /* the live calibration object, deliberately by reference: it is serialised at SAVE time, so
+           a trace recorded across a calibration refinement carries the fit that was actually in
+           force at the end rather than a stale copy taken at the start */
+        calibration: this.det.cal,
+        device: {
+          ua: navigator.userAgent, mode: this.mode, delegate: this.delegate,
+          w: (this.pipCam && this.pipCam.videoWidth) || 0,
+          h: (this.pipCam && this.pipCam.videoHeight) || 0,
+        },
+      },
+    });
+    $('recChip').classList.add('on');
+    this.recPaint(true);
+    return true;
+  },
+
+  /* Stop and hand over the file in one action, because they are one intention. A stop that left the
+     data sitting in memory would be a stop that loses it the moment the tab is closed. */
+  recSave(){
+    if (!this.det || !this.Det.recording(this.det)) return false;
+    this.Det.stopRecording(this.det);
+    $('recChip').classList.remove('on');
+    UI.setToggle($('tgRec'), false);
+    const tr = this.Det.recTrace(this.det);
+    const st = this.Det.recStats(this.det);
+    if (!tr || !tr.frames.length){
+      $('recSub').textContent = 'nothing recorded — was the camera seeing you?';
+      return false;
+    }
+    try {
+      const blob = new Blob([JSON.stringify(tr)], { type:'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const stamp = new Date().toISOString().replace(/[:.]/g,'-').slice(0,19);
+      a.href = url; a.download = `belt-trace-${stamp}.json`;
+      document.body.appendChild(a); a.click(); a.remove();
+      /* the revoke has to outlive the download the browser has only just started */
+      setTimeout(()=>URL.revokeObjectURL(url), 30000);
+      $('recSub').textContent = `saved ${st.frames} frames · ${st.seconds}s`;
+    } catch(e){
+      $('recSub').textContent = 'could not save: ' + (e.message || e);
+      return false;
+    }
+    this.Det.recClear(this.det);
+    return true;
+  },
+
+  recStop(){
+    if (this.det && this.Det) this.Det.stopRecording(this.det);
+    $('recChip').classList.remove('on');
+  },
+
+  /* Elapsed and size, throttled: this is a diagnostic readout, and one that caused layout work at
+     inference rate would be measuring its own overhead. */
+  recPaint(force){
+    if (!this.det || !this.Det || !this.Det.recording(this.det)) return;
+    const now = performance.now();
+    if (!force && now - this.recPaintT < 250) return;
+    this.recPaintT = now;
+    const st = this.Det.recStats(this.det);
+    $('recStat').textContent = `${st.seconds.toFixed(1)}s · ${st.frames}`;
+    $('recHint').textContent = st.dropped
+      ? `TAP TO SAVE · last 90s`      /* the ring has wrapped, so say what the file will contain */
+      : 'TAP TO SAVE';
+    $('recSub').textContent = `recording · ${st.seconds.toFixed(0)}s · ~${(st.bytes/1e6).toFixed(1)}MB`;
   },
 };
 
@@ -5040,6 +5175,19 @@ const UI = {
       /* the lunge is only worth calibrating when lanes exist, so this changes the list too */
       Cam3.syncCalOrder();
       if (!v){ UI.moves(false); this._cueOn=false; this.cue.classList.remove('on'); } });
+    /* RECORD MOVEMENT. Not a `tg()` because it is not a persisted preference — a recorder that came
+       back on next launch because it was on last time is a recorder nobody asked for. Arming it
+       needs the camera; turning it off saves the file, which is the only useful meaning of "off". */
+    $('tgRec').addEventListener('click',(e)=>{ e.stopPropagation(); unfocus(e);
+      const on = $('tgRec').dataset.on === '1';
+      if (on){ Cam3.recSave(); }
+      else if (Cam3.recStart()){ UI.setToggle($('tgRec'), true);
+        $('recSub').textContent = 'recording · close this panel and move'; }
+      else { UI.setToggle($('tgRec'), false);
+        $('recSub').textContent = 'needs the camera on'; }
+    });
+    /* the chip itself saves, so the flow does not require walking back to the phone mid-trace */
+    $('recChip').addEventListener('click',(e)=>{ e.stopPropagation(); unfocus(e); Cam3.recSave(); });
     tg($('tgAuto'),'auto');
     tg($('tgSound'),'sound',(v)=>Sfx.setOn(v));
     tg($('tgShake'),'shake');
@@ -5427,7 +5575,10 @@ const In = {
   gamepad:false, gpTick:0,
   dbgTaps:0, dbgT:0,
 
-  isUI(t){ return !!(t && t.closest && t.closest('.iconBtn,.btn,.toggle,.seg,#setCard')); },
+  /* `#recChip` belongs here for the same reason the buttons do: a tap that saves a recording must
+     not ALSO be read as a steering input, or stopping a trace lurches the penguin in the last frame
+     of every trace recorded. */
+  isUI(t){ return !!(t && t.closest && t.closest('.iconBtn,.btn,.toggle,.seg,#setCard,#recChip')); },
 
   /* a pointerup can be lost (browser UI, call, app switch). If we keep holding the slot,
      steering sticks and every later tap is silently ignored. */
@@ -5461,6 +5612,13 @@ const In = {
       if (k==='e') Game.workout(Game.state !== 'workout');
       if (Game.state==='workout' && k>='1' && k<='4') UI.gymPick(+k - 1);
       if (k==='escape') UI.toggleSettings();
+      /* F2 next to the debug overlay's F3, and out of the way of every gameplay key. Recording a
+         movement from a laptop webcam means both hands are busy being a body, so reaching for
+         Settings mid-trace is exactly the thing to avoid. */
+      if (k==='f2'){
+        if (Cam3.det && Cam3.Det && Cam3.Det.recording(Cam3.det)) Cam3.recSave();
+        else if (Cam3.recStart()) UI.setToggle($('tgRec'), true);
+      }
       if (k==='f3') DBG.toggle();
       if (Game.state==='title' && k!=='e') Game.start();
     }, {passive:false});

@@ -4,3 +4,9 @@ android/
 node_modules/
 # ~18MB of MediaPipe runtime and model weights. Run scripts/fetch-pose-assets.sh to populate.
 pose/vendor/
+# three.js, when kept locally for an offline build or for browser tests behind a firewall. The page
+# normally pulls it from a CDN via the import map and only falls back to this file.
+three.module.js
+# Recorded pose traces. Landmark coordinates of somebody's body, and their own to share or not —
+# they belong in a message to whoever is doing the tuning, never committed by accident.
+belt-trace-*.json
