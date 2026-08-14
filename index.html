@@ -1696,7 +1696,12 @@ const Mode = {
   /* Which CONTROLS acclimation should teach. Only the free run has any: lane mode steers by lunging
      and has no cadence, so there is nothing there to measure and the stage is skipped entirely. */
   moveOrder(){
-    if (Run.lanes || Signal.source !== 'pose') return [];
+    /* NOT gated on `Signal.source`. `syncCalOrder()` runs when the camera is being ENABLED, and
+       `Signal.source` does not become 'pose' until the pose pipeline pushes its first frame — which
+       is after calibration has already begun. Reading it here returned an empty list every time and
+       silently skipped the whole acclimation stage. `setMoveOrder` is only ever called from Cam3, so
+       a camera is implied and the only real question is whether the run has lanes. */
+    if (Run.lanes) return [];
     return ['run','turn','jump','crouch'];
   },
   /* Changing mode mid-run can leave a wall in flight demanding an exercise the mode no longer
@@ -4004,10 +4009,13 @@ const Cam3 = {
 
     /* during calibration the events are consumed by the calibrator, not the game */
     const calibrating = this.cal.stage !== Cal.STAGE.IDLE && this.cal.stage !== Cal.STAGE.DONE;
-    Det.push(this.det, res, t, calibrating ? this.calSink : Signal);
+    const ev = Det.push(this.det, res, t, calibrating ? this.calSink : Signal);
 
     if (calibrating){
-      Cal.step(this.cal, this.det.frame, this.det.body, null);
+      /* The event, not null. The acclimation stage's JUMP step waits for `ev.jump`, and passing null
+         meant that step could never complete — the player would sit on it until they skipped.
+         Nothing else in the calibrator read `ev`, which is why it had gone unnoticed. */
+      Cal.step(this.cal, this.det.frame, this.det.body, ev);
       if (this.cal.stage === Cal.STAGE.REPS){
         const k = this.cal.exOrder[this.cal.exIdx];
         if (k !== undefined){
