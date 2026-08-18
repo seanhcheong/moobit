@@ -242,6 +242,11 @@ function PCtick(res, t){
     const st = Det.recStats(D);
     $('bRec').textContent = 'Recording ' + st.frames + ' · ' + st.seconds.toFixed(0) + 's';
   }
+  /* the amplitude noise capture rides the calibrator's own hold-still window — see pose/noise.js */
+  const wantStill = Cal.wantsStillness ? Cal.wantsStillness(C) : false;
+  if (wantStill !== Det.noiseCapturing(D)){
+    if (wantStill) Det.armNoiseCapture(D); else Det.endNoiseCapture(D);
+  }
   if (C.stage !== Cal.STAGE.IDLE && C.stage !== Cal.STAGE.DONE){
     Cal.step(C, D.frame, D.body, null);
     if (C.stage === Cal.STAGE.REPS){

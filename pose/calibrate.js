@@ -111,6 +111,22 @@ export function setMoveOrder(c, order){
 
 export function begin(c){ c.reset(); c.stage = STAGE.FRAME; }
 
+/* Is the player being asked to HOLD STILL right now?
+
+   The amplitude noise floor can only be measured while the body is not moving, and no statistic can
+   verify stillness at realistic camera noise — see the table in `pose/noise.js`. So it has to be
+   measured during a window where stillness was ASKED FOR, and these two stages already are one: the
+   framing check holds for two seconds and the A-pose for about one more, both with the instruction on
+   screen. That is three seconds of stillness the player is already giving, so the measurement costs
+   nothing extra.
+
+   This lives here rather than in the detector because it is a statement about what the player has been
+   told, which is the calibrator's business; and it is a query rather than a callback so that both hosts
+   ask one question instead of each re-deciding which stages count. */
+export function wantsStillness(c){
+  return c.stage === STAGE.FRAME || c.stage === STAGE.APOSE;
+}
+
 /* ---- stage 1: framing, with guidance specific enough to act on -------------------------- */
 export const holdMs = ()=> CONFIG.calib.frameHoldMs;
 

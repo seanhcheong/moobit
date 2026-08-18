@@ -40,8 +40,10 @@
    ===================================================================================== */
 
 import { CONFIG } from './config.js';
+import { floorOf } from './noise.js';
 
 const C = CONFIG.run;
+const NC = CONFIG.noise;
 
 export function create(){
   return {
@@ -75,7 +77,17 @@ export function step(m, body, cal, ev){
      is half the peak-to-peak amplitude. Half of that again is the 25%-of-amplitude threshold the
      offline measurement settled on. The floor keeps a body that has not run yet from having a
      threshold of zero and counting noise as steps. */
-  const th = Math.max(C.minSplit, body.ankleAlt*C.thFrac);
+  /* Both amplitude gates get a FLOOR at a multiple of this camera's own measured jitter, never a
+     replacement — see `noise.floorOf`. A quiet camera keeps the fixed numbers exactly, and only a
+     noisy one gets stricter, so this cannot make a movement that used to register stop registering
+     on the hardware the numbers were tuned against.
+
+     These two gates in particular, because `ankleSplit` is a DIFFERENCE of two landmarks: the two
+     ankles' errors add rather than cancel, which makes it the most noise-exposed signal in the layer
+     and the one that produced 47-83 phantom steps per 20 motionless seconds before filtering. */
+  const NA = cal && cal.noiseAmp;
+  const minSplit = floorOf(C.minSplit, NA && NA.ankleSplit, NC.kMinSplit);
+  const th = Math.max(minSplit, body.ankleAlt*C.thFrac);
   const rearm = th*C.rearmFrac;
 
   let stepped = false;
@@ -107,7 +119,8 @@ export function step(m, body, cal, ev){
      drives the player's position on the belt: a cliff would read as the treadmill lurching. */
   const interval = Math.max(m.lastIntervalMs || C.maxStepMs, m.msSinceStep);
   let raw = interval > 0 ? 1000/interval : 0;
-  if (m.msSinceStep > C.maxStepMs || body.ankleAlt < C.altGate) raw = 0;
+  const altGate = floorOf(C.altGate, NA && NA.ankleAlt, NC.kAltGate);
+  if (m.msSinceStep > C.maxStepMs || body.ankleAlt < altGate) raw = 0;
   raw = Math.min(raw, 1000/C.minStepMs);
 
   const k = dt > 0 ? (1 - Math.exp(-(dt/1000)/C.cadTau)) : 1;

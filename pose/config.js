@@ -193,6 +193,66 @@ export const CONFIG = {
     worldScale: 0.25,     // metric-frame speeds are numerically larger; put beta on one footing
   },
 
+  /* ---- the measured noise floor ----------------------------------------------------------
+     See `pose/noise.js`. This exists so a threshold can be stated as a multiple of THIS camera's
+     jitter in THIS light rather than as an absolute that is generous on one phone and impossible on
+     another. Every value here is about the measurement, not about any exercise. */
+  noise: {
+    on: true,
+    windowMs: 4000,        // rolling window. 4s, not 2: sigma from 30 samples carries 13% error.
+    assumedFps: 30,        // only sizes the ring; the real rate is whatever it turns out to be
+    minSamples: 40,        // below this, report 0 rather than a figure nobody should trust
+    /* The floor is the MINIMUM of the rolling medians over this much history, sampled this often.
+       Measured reason: slow movement leaves the median untouched (a 0.5Hz and a 1.0Hz squat both read
+       1.00x) but a jumping jack's fast limb reversals inflate it 2.19x, and no statistic inside a 4s
+       window can separate those from noise. Half a minute of history means any few quiet seconds pin
+       the floor correctly, and a minimum can only err downward — which leaves a threshold where it
+       was rather than making it spuriously strict. */
+    floorMs: 30000,
+    sampleMs: 1000,
+    /* A gap this long breaks the difference run. Differencing across a dropout produces a spike that
+       is not sensor noise and, being a median over a few seconds, would otherwise poison a whole
+       window. */
+    maxGapMs: 120,
+    /* Multiples of measured sigma used as FLOORS under the fixed gates — never as replacements, so a
+       quiet camera behaves exactly as it did before and only a noisy one gets stricter. Both of these
+       gate amplitude on a differential signal, which is the most noise-exposed shape there is: the
+       two ankles' errors add rather than cancel. */
+    /* Multiples of the captured AMPLITUDE sigma (`cal.noiseAmp`), not of the curvature sigma. Each gate
+       has to land in the gap between the noise's worst EXCURSION and the real signal's typical peak, so
+       both ends were measured rather than assumed. Standing still for 20s, then running at 2.6 steps/s,
+       at three landmark noise levels:
+
+                    still max   running    worst/sigma   the k that fits
+         ankleSplit   0.0753     0.1912       3.4          3.4 .. 8.5
+         ankleAlt     0.0611     0.1386       1.4          1.4 .. 3.2      (at jitter 0.012)
+
+       The two differ by more than 2x and one number for both was the mistake that broke this: at 4.5
+       the alt gate landed at 0.196, ABOVE the 0.139 a running body actually produces, and cadence
+       detection switched off at every noise level above quiet.
+
+       Why they differ, since the underlying noise is identical: `ankleAlt` is an asymmetric-EMA
+       MAGNITUDE — fast attack, slow decay — so it rectifies the noise and never sits near zero. A
+       rectified signal's peak is a much smaller multiple of its own sigma than a zero-centred one's,
+       which is a property of the statistic and not of the camera. */
+    kAltGate: 2.2,
+    kMinSplit: 5.0,
+    /* Multiples of the curvature sigma that still counts as a motionless body, for deciding when the
+       AMPLITUDE floors may be sampled at all. A still body sits near 2.26 by construction (a first
+       difference has sqrt(2) the sigma, and a mean absolute value 0.798 of that, summed over x and y);
+       4.0 leaves room for breathing without admitting a step. */
+    stillK: 4.0,
+    /* No noise-derived floor may exceed this multiple of the fixed threshold it sits under. A
+       backstop: getting the stillness gate wrong once inflated a gate 13x and turned running off
+       completely, and the failure mode of a control that silently stops working is bad enough to
+       deserve a hard bound rather than only a careful measurement. */
+    capMul: 3.0,
+    /* What counts as a camera worth warning the player about, in normalised image units. Anchored to
+       the injected levels the smoothing was tuned against: 0.004 produced nothing, 0.008 produced 21
+       phantom jumps in 20 seconds unfiltered. */
+    warnLm: 0.009,
+  },
+
   /* ---- crouch: a CONTROL, not a rep ------------------------------------------------------
      Read from the STRAIGHTER knee, because running in place bends one knee at a time and locks the
      other out at 171-180 degrees while a crouch bends both. Measured separation is 65 degrees, so
@@ -361,6 +421,12 @@ export function defaultCalibration(){
        wrong for any particular body. The turn one is the reason this stage exists: run-direction
        steering reads shoulder foreshortening against the player's own square-on width, and how far
        a given person turns while jogging on the spot is not something worth guessing. */
+    /* THE MEASURED AMPLITUDE NOISE of the zero-centred channels, captured while the player held still
+       during onboarding. Belongs here rather than on `body` because it is a property of this body in
+       front of this camera in this room — exactly like every other value in this object — and because
+       storing it here means it persists between sessions and travels inside a recorded trace for free.
+       Empty until measured, and every gate keeps its fixed value until then. See `pose/noise.js`. */
+    noiseAmp: null,
     swSquare: 0,                 // square-on shoulder width; 0 = not measured, fall back to live
     turnRatio: 0.94,             // swRatio at this player's comfortable turn — full steering there
     cadFull: CONFIG.run ? 3.0 : 3.0,   // steps/s that earns full throttle

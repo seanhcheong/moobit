@@ -26,6 +26,7 @@ import * as Run from './run.js';
 import * as Crouch from './crouch.js';
 import * as Smooth from './smooth.js';
 import * as Record from './record.js';
+import * as Noise from './noise.js';
 
 export const TRACK = { GOOD:'good', DEGRADED:'degraded', LOST:'lost' };
 
@@ -40,7 +41,7 @@ const NEED_KEY = {
 };
 
 export function create(){
-  return {
+  const d = {
     frame: makeFrame(),
     body:  makeBody(),
     cal:   defaultCalibration(),
@@ -55,6 +56,9 @@ export function create(){
     runM:  Run.create(),
     crouchM: Crouch.create(),
     smooth: Smooth.create(33),
+    /* the rolling noise floor. Always on: it costs two subtractions per landmark per frame, and
+       having it always available is what lets a threshold be stated in multiples of it. */
+    noiseM: Noise.create(),
     /* the trace recorder, off and unallocated until somebody asks for it — see record.js */
     rec: null,
     want: EX.JACK,              // which exercise the wall in front is asking for
@@ -69,6 +73,10 @@ export function create(){
           cadence:0, step:false, crouch:false },
     stats: { frames:0, progress:0, completed:0, rejected:0, lanes:0, lost:0, jumps:0, live:0, steps:0 },
   };
+  /* the noise sampler keeps `body.noise` current, so any machine can state a gate in multiples of
+     measured jitter without a new parameter reaching it */
+  Noise.bindFloors(d.noiseM, d.body.noise);
+  return d;
 }
 
 export function setWant(d, kind){
@@ -97,6 +105,23 @@ export function recording(d){ return !!(d.rec && d.rec.on); }
 export function recStats(d){ return d.rec ? Record.stats(d.rec) : { frames:0, seconds:0, dropped:0, fps:0, bytes:0 }; }
 export function recTrace(d){ return d.rec ? Record.toTrace(d.rec) : null; }
 export function recClear(d){ if (d.rec) Record.clear(d.rec); }
+
+/* ---- the measured noise floor ----------------------------------------------------------
+   A snapshot of the rolling estimate. Allocates, so ask for it when something wants to display or
+   store it rather than every frame. See `pose/noise.js` for what it means. */
+export function noiseFloor(d){ return Noise.result(d.noiseM); }
+export function noiseReset(d){ Noise.reset(d.noiseM); }
+/* Capture the AMPLITUDE noise, which cannot be measured while the body moves — see noise.js. Arm it
+   for a window in which the player has been asked to hold still, then read it out and store it on the
+   calibration, where every other per-body measurement lives. */
+export function armNoiseCapture(d){ Noise.armAmplitude(d.noiseM); }
+export function endNoiseCapture(d){
+  const cap = Noise.amplitudeCapture(d.noiseM);
+  Noise.disarmAmplitude(d.noiseM);
+  if (cap && d.cal) d.cal.noiseAmp = cap;
+  return cap;
+}
+export function noiseCapturing(d){ return !!d.noiseM.ampArmed; }
 
 /* ---- tracking state, from the landmarks the ACTIVE exercise needs, not all 33 ----------
 
@@ -174,6 +199,11 @@ function pushCore(d, res, tMs, sink){
   ev.step = false;   /* ev.cadence is a level, not an edge, so it is NOT cleared here */
 
   adapt(d.frame, res, tMs);
+  /* The noise floor is measured on the RAW landmarks, BEFORE the filter. The question it answers is
+     what the CAMERA delivers; a figure taken after filtering would report the filter's residual and
+     so could never tell you whether the filter is doing enough. This line's position relative to the
+     next one is the whole meaning of the number. */
+  if (CONFIG.noise.on) Noise.pushLandmarks(d.noiseM, d.frame, tMs);
   /* Smooth the LANDMARKS, once, before anything reads them. Every derived signal in this layer was
      already smoothed individually; the source they all share was not, so each consumer was fighting
      the same jitter separately and anything nobody had filtered passed it into a command. */
@@ -216,6 +246,9 @@ function pushCore(d, res, tMs, sink){
   }
 
   readBody(d.body, d.frame, d.cal);
+  /* Channels are measured AFTER the filter, on purpose and for the opposite reason: a threshold is
+     compared against the filtered value, so post-filter noise is what a threshold contends with. */
+  if (CONFIG.noise.on) Noise.pushChannels(d.noiseM, d.body);
   if (!d.body.valid) return ev;
 
   /* THE CONTROLS ARE ALWAYS LIVE — lane changes, jumping, and running in place. None of them is

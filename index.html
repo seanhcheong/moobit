@@ -4041,6 +4041,16 @@ const Cam3 = {
     }
     this.inferMs = this.src.stats.inferMs;
 
+    /* THE NOISE CAPTURE. Armed exactly while the calibrator is asking the player to hold still, and
+       read out on the way back down, which stores it on the calibration. The amplitude noise floor
+       cannot be measured while the body moves and no statistic can verify stillness at realistic
+       camera noise, so it has to ride a window where stillness was asked for — see pose/noise.js. */
+    const wantStill = Cal.wantsStillness ? Cal.wantsStillness(this.cal) : false;
+    if (wantStill !== Det.noiseCapturing(this.det)){
+      if (wantStill) Det.armNoiseCapture(this.det);
+      else Det.endNoiseCapture(this.det);
+    }
+
     /* during calibration the events are consumed by the calibrator, not the game */
     const calibrating = this.cal.stage !== Cal.STAGE.IDLE && this.cal.stage !== Cal.STAGE.DONE;
     const ev = Det.push(this.det, res, t, calibrating ? this.calSink : Signal);

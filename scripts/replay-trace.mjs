@@ -372,6 +372,11 @@ for (const n of SHOW){
 }
 
 console.log('\n6. THRESHOLDS vs WHAT THIS BODY ACTUALLY DID');
+/* The measured amplitude noise, captured while the player held still during onboarding, travels inside
+   the trace because it lives on the calibration. Where it exists, a threshold can be stated in the
+   only units that mean anything across cameras: multiples of this camera's own jitter. Under about 3
+   the threshold is inside the noise and will be crossed by nothing at all happening. */
+const NA = trace.calibration && trace.calibration.noiseAmp;
 for (const [path, sig, what] of AUDIT){
   const th = cfgAt(path);
   const a = seriesOf(sig);
@@ -379,7 +384,18 @@ for (const [path, sig, what] of AUDIT){
   const lo = Math.min(...a), hi = Math.max(...a);
   const frac = a.filter(v=>v >= th).length / a.length;
   const flag = th < lo ? 'ALWAYS above it' : th > hi ? 'NEVER reached' : `${(100*frac).toFixed(0)}% of frames above`;
-  console.log(`  ${path.padEnd(20)} ${String(th).padStart(7)}  ${what} ${sig}  [${lo.toFixed(2)}..${hi.toFixed(2)}]  ${flag}`);
+  const sigma = NA && NA[sig];
+  const inSigma = sigma > 0 ? `  = ${(th/sigma).toFixed(1)} sigma${th/sigma < 3 ? ' <-- INSIDE THE NOISE' : ''}` : '';
+  console.log(`  ${path.padEnd(20)} ${String(th).padStart(7)}  ${what} ${sig}  [${lo.toFixed(2)}..${hi.toFixed(2)}]  ${flag}${inSigma}`);
+}
+if (NA){
+  console.log('\n   measured amplitude noise for this body and camera (captured while holding still):');
+  for (const k of Object.keys(NA)){
+    if (typeof NA[k] !== 'number' || k === 'measuredAt' || k === 'samples') continue;
+    console.log(`     ${k.padEnd(14)} ${NA[k].toFixed(4)}`);
+  }
+} else {
+  console.log('\n   no amplitude noise capture in this trace — thresholds can only be judged in absolute units');
 }
 
 if (csvSigs.length){

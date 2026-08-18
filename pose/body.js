@@ -88,6 +88,11 @@ export function makeBody(){
        calibration. Written by jump.js each frame; the burpee reads it to see its finishing hop,
        which used to require calibration and therefore could not happen on a first run. */
     jumpRise:0,
+    /* THE MEASURED NOISE FLOOR of each derived channel, in that channel's own units. Written by
+       `noise.js` roughly once a second, not per frame. A machine reads these to state a gate as a
+       multiple of this camera's actual jitter instead of as an absolute that is generous on one phone
+       and impossible on another — see `noise.floorOf`, which only ever tightens a gate. */
+    noise: {},
     /* per-exercise confidence */
     /* `pushupElbow` is not an exercise — it is the push-up's optional elbow evidence, kept in
        its own group so that losing it costs form score instead of refusing the rep */
