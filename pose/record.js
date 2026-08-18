@@ -108,6 +108,20 @@ function makeRow(){
   };
 }
 
+/* ---- GROUND TRUTH ----------------------------------------------------------------------
+   A trace on its own says what the detector concluded. It cannot say whether that was RIGHT, because
+   nothing in the file records what the player was actually doing. So while recording, somebody taps a
+   button as the movement happens — jump, duck, turn, run — and those taps go in beside the landmarks.
+   With them, precision and recall become computable and tuning stops being an argument about what
+   looked about right.
+
+   THE ONE THING THESE ARE NOT GOOD FOR. A human tap carries 200-400ms of reaction latency, and no
+   amount of care removes it. So labels answer "did this movement register at all, and how many things
+   fired that were not movements" — counting questions, which is what tuning a threshold needs. They
+   cannot answer "did it fire at takeoff or at the apex", because the reference is looser than the
+   quantity being measured. Latency needs a different instrument and this is not it. */
+export const LABELS = ['jump', 'duck', 'turn-left', 'turn-right', 'run-start', 'run-stop'];
+
 /* `seconds` is a hint; capacity is frames, because inference rate is not knowable in advance and
    a trace that silently held a different duration than requested would be worse than one that
    states its capacity outright. 30fps is the optimistic case on a phone. */
@@ -130,10 +144,25 @@ export function create(opts){
     t0: -1,            // capture timestamp of the first recorded frame
     note: o.note || '',
     meta: o.meta || null,
+    /* ground-truth taps, oldest first. A plain array: these arrive at human speed — a few per second
+       at the very most — so the zero-allocation discipline the frame path needs does not apply, and a
+       ring would risk silently dropping the evidence a trace exists to carry. Capped only to bound a
+       stuck finger. */
+    labels: [],
   };
 }
 
+/* Mark that a movement really happened, now. `tMs` should be the same clock the frames use, so the
+   label lands on the timeline rather than near it. */
+export function label(rec, kind, tMs){
+  if (!rec.on) return false;
+  if (rec.labels.length >= 4000) return false;
+  rec.labels.push({ kind, t: tMs });
+  return true;
+}
+
 export function clear(rec){
+  rec.labels.length = 0;
   rec.head = 0; rec.count = 0; rec.dropped = 0; rec.cur = -1; rec.t0 = -1;
   rec.seq = 0; rec.calFp = null; rec.calDrift = false;
   for (let i=0;i<rec.cap;i++) rec.rows[i].used = false;
@@ -328,6 +357,8 @@ export function toTrace(rec){
        trace with this set cannot be reproduced exactly and the report has to say so */
     calDrift: rec.calDrift,
     derived: DERIVED,
+    /* what the player says they did, against which what the detector said can be scored */
+    labels: rec.labels.slice().sort((a,b)=> a.t - b.t),
     /* The thresholds and the body fit that produced the `live` values. Without these a trace
        cannot be reproduced: the same landmarks under different constants are a different session,
        and a replay that quietly used today's defaults would compare two unrelated things. */

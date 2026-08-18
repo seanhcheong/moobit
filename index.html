@@ -239,6 +239,19 @@
     font-variant-numeric:tabular-nums}
   #recHint{font-size:9px;letter-spacing:.08em;opacity:.5;margin-top:1px}
   #recSub{font-size:10px;letter-spacing:.08em;opacity:.55;margin:-2px 0 8px;text-align:right}
+  /* GROUND TRUTH. Only visible while recording, because outside a recording a tap means nothing.
+     Large enough to hit without looking: whoever is tapping these is watching the PLAYER, not the
+     screen, and a mistimed tap is a mislabelled movement. Bottom of the screen and full width so a
+     thumb can find them by position. */
+  #labRow{position:absolute;left:50%;bottom:calc(14px + var(--sab));transform:translateX(-50%);
+    display:none;gap:5px;z-index:8;pointer-events:auto;flex-wrap:wrap;justify-content:center;
+    max-width:min(96vw,520px)}
+  #labRow.on{display:flex}
+  #labRow button{font:inherit;font-size:11px;letter-spacing:.08em;padding:10px 11px;border-radius:11px;
+    color:#ffd9d9;background:rgba(38,12,14,.80);border:1px solid rgba(255,120,120,.45);
+    backdrop-filter:blur(6px);cursor:pointer;min-width:58px}
+  #labRow button:active{background:rgba(255,120,120,.35);color:#fff}
+  #labRow button.hit{background:rgba(255,120,120,.55);color:#fff}
   #trackChip{position:absolute;left:50%;top:calc(58px + var(--sat));transform:translateX(-50%);
     padding:6px 15px 7px;border-radius:13px;font-size:12px;letter-spacing:.16em;
     background:rgba(16,22,38,.76);border:2px solid rgba(255,255,255,.18);opacity:0;
@@ -331,6 +344,8 @@
       <div id="recStat">0.0s · 0</div>
       <div id="recHint">TAP TO SAVE</div>
     </div>
+
+    <div id="labRow"></div>
 
     <div id="trackChip">TRACKING</div>
     <div id="rejectMsg" class="num">GO LOWER</div>
@@ -4221,8 +4236,33 @@ const Cam3 = {
       },
     });
     $('recChip').classList.add('on');
+    this.buildLabels();
+    $('labRow').classList.add('on');
     this.recPaint(true);
     return true;
+  },
+
+  /* GROUND TRUTH BUTTONS. Built once, on first arm, from the detector's own list so the two cannot
+     drift apart. Whoever taps these is watching the player rather than the screen — see the note on
+     LABELS in pose/record.js for what a human tap can and cannot measure. */
+  buildLabels(){
+    const row = $('labRow');
+    if (row.childElementCount) return;
+    for (const kind of (this.Det.LABELS || [])){
+      const b = document.createElement('button');
+      b.textContent = kind.replace('turn-','').replace('run-','').toUpperCase();
+      b.title = kind;
+      b.addEventListener('click', (e)=>{
+        e.stopPropagation();
+        /* performance.now() is the same clock the capture timestamps use, so the label lands ON the
+           timeline rather than near it */
+        if (this.Det.recLabel(this.det, kind, performance.now())){
+          b.classList.add('hit');
+          setTimeout(()=>b.classList.remove('hit'), 180);
+        }
+      });
+      row.appendChild(b);
+    }
   },
 
   /* Stop and hand over the file in one action, because they are one intention. A stop that left the
@@ -4231,6 +4271,7 @@ const Cam3 = {
     if (!this.det || !this.Det.recording(this.det)) return false;
     this.Det.stopRecording(this.det);
     $('recChip').classList.remove('on');
+    $('labRow').classList.remove('on');
     UI.setToggle($('tgRec'), false);
     const tr = this.Det.recTrace(this.det);
     const st = this.Det.recStats(this.det);
@@ -4259,6 +4300,7 @@ const Cam3 = {
   recStop(){
     if (this.det && this.Det) this.Det.stopRecording(this.det);
     $('recChip').classList.remove('on');
+    $('labRow').classList.remove('on');
   },
 
   /* Elapsed and size, throttled: this is a diagnostic readout, and one that caused layout work at
@@ -4269,7 +4311,8 @@ const Cam3 = {
     if (!force && now - this.recPaintT < 250) return;
     this.recPaintT = now;
     const st = this.Det.recStats(this.det);
-    $('recStat').textContent = `${st.seconds.toFixed(1)}s · ${st.frames}`;
+    const nl = (this.det.rec && this.det.rec.labels.length) || 0;
+    $('recStat').textContent = `${st.seconds.toFixed(1)}s · ${st.frames}` + (nl ? ` · ${nl}L` : '');
     $('recHint').textContent = st.dropped
       ? `TAP TO SAVE · last 90s`      /* the ring has wrapped, so say what the file will contain */
       : 'TAP TO SAVE';
@@ -5588,7 +5631,7 @@ const In = {
   /* `#recChip` belongs here for the same reason the buttons do: a tap that saves a recording must
      not ALSO be read as a steering input, or stopping a trace lurches the penguin in the last frame
      of every trace recorded. */
-  isUI(t){ return !!(t && t.closest && t.closest('.iconBtn,.btn,.toggle,.seg,#setCard,#recChip')); },
+  isUI(t){ return !!(t && t.closest && t.closest('.iconBtn,.btn,.toggle,.seg,#setCard,#recChip,#labRow')); },
 
   /* a pointerup can be lost (browser UI, call, app switch). If we keep holding the slot,
      steering sticks and every later tap is silently ignored. */

@@ -398,6 +398,91 @@ if (NA){
   console.log('\n   no amplitude noise capture in this trace — thresholds can only be judged in absolute units');
 }
 
+/* ---- 7. scored against ground truth -----------------------------------------------------
+   With labels in the trace, "is this threshold right" stops being a matter of opinion. Each labelled
+   movement is matched to the nearest detection of the same kind inside a tolerance window; unmatched
+   labels are misses, unmatched detections are false positives.
+
+   THE WINDOW IS WIDE ON PURPOSE, and its width is the honest limit of this method. A human tapping a
+   button lags the movement by 200-400ms, so a tight window would score reaction time rather than
+   detection. That is also why no latency figure is reported here: the reference is looser than the
+   quantity, and a mean offset computed against it would look like a measurement while being an
+   artifact. Recall and precision survive a loose window; latency does not. */
+const LABEL_WIN_MS = 900;
+const LABEL_MAP = {
+  'jump':       (o)=> o.jump,
+  'duck':       (o)=> o.crouchEdge,
+  'turn-left':  (o)=> o.lane < 0,
+  'turn-right': (o)=> o.lane > 0,
+  'run-start':  null,      /* a rate, not an edge — scored separately below */
+  'run-stop':   null,
+};
+const labels = Array.isArray(trace.labels) ? trace.labels : [];
+if (labels.length){
+  console.log('\n7. SCORED AGAINST GROUND TRUTH  (' + labels.length + ' labels, +/-' + LABEL_WIN_MS + 'ms window)');
+  const byKind = {};
+  for (const L of labels){ (byKind[L.kind] = byKind[L.kind] || []).push(L.t); }
+
+  for (const kind of Object.keys(byKind)){
+    const pick = LABEL_MAP[kind];
+    if (!pick){
+      /* run-start / run-stop describe a LEVEL changing, so score whether cadence was actually up or
+         down a moment later rather than looking for an edge that does not exist */
+      const want = kind === 'run-start';
+      let right = 0;
+      for (const t of byKind[kind]){
+        /* half a second after the tap, in the direction the tap claimed */
+        let best = null;
+        for (let i=0;i<out.length;i++){
+          if (out[i].t >= t + 500){ best = out[i]; break; }
+        }
+        if (best && ((best.cadence > 0.8) === want)) right++;
+      }
+      const n = byKind[kind].length;
+      console.log(`  ${kind.padEnd(11)} ${right}/${n} correct 500ms after the tap` +
+                  `   (${(100*right/n).toFixed(0)}%)`);
+      continue;
+    }
+    /* detections of this kind, as timestamps */
+    const det = [];
+    for (let i=0;i<out.length;i++) if (pick(out[i])) det.push(out[i].t);
+    const used = new Set();
+    let hit = 0;
+    const missed = [];
+    for (const t of byKind[kind]){
+      let bi = -1, bd = Infinity;
+      for (let i=0;i<det.length;i++){
+        if (used.has(i)) continue;
+        const dd = Math.abs(det[i] - t);
+        if (dd < bd){ bd = dd; bi = i; }
+      }
+      if (bi >= 0 && bd <= LABEL_WIN_MS){ used.add(bi); hit++; }
+      else missed.push(((t - F[0].t)/1000).toFixed(1));
+    }
+    const fp = det.length - used.size;
+    const n = byKind[kind].length;
+    const recall = n ? hit/n : 0;
+    const prec = det.length ? used.size/det.length : (n ? 0 : 1);
+    console.log(`  ${kind.padEnd(11)} recall ${hit}/${n} (${(100*recall).toFixed(0)}%)   ` +
+                `precision ${used.size}/${det.length} (${(100*prec).toFixed(0)}%)   ` +
+                `${fp} fired with no label` +
+                (missed.length ? `   missed at t+${missed.slice(0,6).join(', ')}s` : ''));
+  }
+
+  /* detections of a kind nobody ever labelled are worth naming separately: they are the phantom
+     commands a player actually complains about, and a trace with no label for them at all still
+     proves they happened */
+  for (const kind of Object.keys(LABEL_MAP)){
+    if (byKind[kind] || !LABEL_MAP[kind]) continue;
+    let n = 0;
+    for (let i=0;i<out.length;i++) if (LABEL_MAP[kind](out[i])) n++;
+    if (n) console.log(`  ${kind.padEnd(11)} ${n} fired, never labelled at all — every one is a phantom`);
+  }
+} else {
+  console.log('\n7. NO GROUND TRUTH in this trace. Tap the movement buttons while recording and');
+  console.log('   recall and precision become computable instead of a matter of opinion.');
+}
+
 if (csvSigs.length){
   console.log('\n--- csv ---');
   console.log(['t', ...csvSigs].join(','));

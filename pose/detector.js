@@ -105,6 +105,10 @@ export function recording(d){ return !!(d.rec && d.rec.on); }
 export function recStats(d){ return d.rec ? Record.stats(d.rec) : { frames:0, seconds:0, dropped:0, fps:0, bytes:0 }; }
 export function recTrace(d){ return d.rec ? Record.toTrace(d.rec) : null; }
 export function recClear(d){ if (d.rec) Record.clear(d.rec); }
+/* Ground truth: somebody taps as the movement happens, so precision and recall become computable.
+   See the note on LABELS in record.js for what these can and cannot answer. */
+export function recLabel(d, kind, tMs){ return d.rec ? Record.label(d.rec, kind, tMs) : false; }
+export const LABELS = Record.LABELS;
 
 /* ---- the measured noise floor ----------------------------------------------------------
    A snapshot of the rolling estimate. Allocates, so ask for it when something wants to display or
