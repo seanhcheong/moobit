@@ -86,7 +86,27 @@ export function step(m, frame, body, cal, ev, emit){
       m.base += (rise < 0 ? rise*C.baseTrackDown : rise*C.baseTrackUp)*Math.max(1e-4, body.legLen);
       m.peak = 0;
       if (m.refractory > 0) break;
-      if (rise > C.takeoffRise && m.vel > C.minUpVel){
+      /* THE TAKEOFF BAR RISES WITH THE STRIDE. Measuring the LOWER ankle stops a movement that always
+         keeps one foot down from ever looking airborne — but real running in place has a FLIGHT PHASE
+         where both feet genuinely leave the ground, so the lower ankle really does rise and the veto
+         never engages. Measured, that is worth 1-2 phantom jumps in ten seconds of vigorous running,
+         which is exactly what a player reported.
+
+         Blocking jumps whenever the ankles alternate would be wrong: jumping WHILE running is the
+         whole game. So the bar is floored at a multiple of `ankleAlt` instead, and the arithmetic is
+         what makes it work — a stride cannot clear a bar set by its own alternation, while a real
+         jump clears it several times over:
+
+                                   ankleAlt   rise    bar at 1.2x   fires?
+           running, flight phase     0.125     0.074     0.150        no
+           running hard, flight      0.110     0.091     0.132        no
+           jump from standing        0.011     0.257     0.055        yes
+           jump out of a run         ~0.12     0.257     ~0.145       yes
+
+         The alternation decays over ~0.7s once the feet stop swapping, so this also lets go promptly
+         when a player stops running and then jumps. */
+      const bar = Math.max(C.takeoffRise, C.strideK*body.ankleAlt);
+      if (rise > bar && m.vel > C.minUpVel){
         if (out){ out.jump = true; out.jumpHold = true; }   // fired at takeoff, hold engaged
         m.state = 'AIR'; m.stateT = 0; m.jumps++;
         m.refractory = C.refractoryMs;

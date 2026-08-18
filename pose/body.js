@@ -77,6 +77,8 @@ export function makeBody(){
     /* signed, in shoulder widths: nose x relative to the shoulder midpoint. WHICH WAY the body is
        turned; the magnitude and the head-turn rejection come from shoulder foreshortening. */
     noseOff:0,
+    /* signed sine of the body's turn, from shoulder depth. + agrees with + hipX. See readBody. */
+    turnSin:0,
     /* ms since the torso was last nearer horizontal than vertical — how a burpee's finishing hop
        is told apart from a deliberate jump */
     msSinceProne:60000,
@@ -181,6 +183,36 @@ export function readBody(body, frame, cal){
      for: it stays at exactly 1.000 for a head-only turn and drops to 0.879 for a body turn. Sign
      from here, magnitude and the gate from there. */
   body.noseOff = (I[LM.NOSE].x - sh.x)/body.shoulderW;
+
+  /* ---- WHICH WAY THE BODY IS TURNED, from shoulder depth ---------------------------------
+     Turn to one side and one shoulder comes toward the lens while the other goes away. That depth
+     difference over the shoulder width IS the sine of the turn angle, and it is the right signal for
+     three reasons the alternatives are not:
+
+       distance-invariant   both terms are lengths in the same metric frame, so how far the player is
+                            standing cancels exactly rather than biasing the result
+       well conditioned     d(asin)/dx = 1 at zero, where shoulder FORESHORTENING is at its worst:
+                            cos changes quadratically, so a 12 degree turn moves the width ratio by
+                            0.015 while it moves this by 0.222 — fifteen times the sensitivity
+       inherently blind to a head turn, because the shoulders do not move when only the head does
+
+     Measured against a body rotated in a synthetic camera, it recovers the true angle to about one
+     degree: +25 deg reads +25.7, -25 reads -23.9, +12 reads +12.8. Standing square-on, stepping
+     sideways, and turning the head 40 degrees all read 1.0 deg.
+
+     THIS REPLACES `noseOff` AS THE DIRECTION. The nose offset is head-relative-to-shoulders, which is
+     exactly the quantity that does NOT change when the whole body turns: a real 25 degree body turn
+     moved it 0.005-0.008, SMALLER than the 0.021 that merely stepping sideways produces through
+     perspective. So the side was being chosen by noise. It stays for what it is genuinely good at,
+     which is spotting a head turn. */
+  {
+    const L = W[LM.SHOULDER_L], R = W[LM.SHOULDER_R];
+    const wid = Math.hypot(L.x - R.x, L.y - R.y, L.z - R.z);
+    /* R minus L, not L minus R: the sign has to agree with `hipX`, because the two are alternative
+       implementations of one control and a player correcting a drift with the wrong one goes further
+       wrong. Verified by driving a body both ways in the same camera. */
+    body.turnSin = wid > 1e-6 ? Math.max(-1, Math.min(1, (R.z - L.z)/wid)) : 0;
+  }
 
   body.wristsAboveShoulders =
     (I[LM.WRIST_L].y - sh.y)/T > 0.02 && (I[LM.WRIST_R].y - sh.y)/T > 0.02;

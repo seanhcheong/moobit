@@ -275,7 +275,11 @@ function pushCore(d, res, tMs, sink){
      Both raw — the game owns the smoothing and the deadzone, as it does for `hipX`. */
   if (sink && sink.turn){
     const sq = d.cal && d.cal.swSquare > 0 ? d.cal.swSquare : 0;
-    sink.turn(sq > 0 ? d.body.shoulderW/sq : 1, d.body.noseOff);
+    /* THIRD argument is the one the game now steers by: `turnSin`, the signed sine of the body turn
+       from shoulder depth. The first two are kept because the acclimation stage and its tests read
+       them, and because the shoulder ratio is still the honest way to spot a head-only turn — but the
+       DIRECTION comes from `turnSin`, which needs no calibration and does not drift with distance. */
+    sink.turn(sq > 0 ? d.body.shoulderW/sq : 1, d.body.noseOff, d.body.turnSin);
   }
 
   /* The crouch is a level rather than an edge, and it is published every frame including through a

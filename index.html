@@ -768,6 +768,12 @@ const TUNING = {
        whose acclimation did not measure their range. */
     turnGate: 0.975,
     turnRatioDefault: 0.90,
+    /* Deadzone and full-steering point on `turnSin` — the SINE of the body turn, so these are
+       sin(deg). 0.10 is about 6 degrees, comfortably above the 0.017 that a square-on body, a sideways
+       step and a 40 degree head turn all read. 0.36 is about 21 degrees for full lateral, which a
+       measured 25 degree turn (0.433) passes with margin. */
+    turnDead: 0.10,
+    turnFull: 0.36,
   },
 
   /* ---- the HIIT session ---------------------------------------------------------------
@@ -1728,8 +1734,8 @@ const PRESETS = {
   /* which steering scheme the free run uses: turn while running, or lateral position. Position is
      the one measured end to end; turning is what the game is actually about. */
   turnSteer:true, camera:null },
-  free:  { label:'FREE RUN', sub:'run in place to move, step to steer',
-           lanes:false, mode:'legs',  camera:true },
+  free:  { label:'FREE RUN', sub:'run in place to move, turn your body to steer',
+           lanes:false, mode:'legs',  camera:true, turnSteer:true },
   /* CALIBRATE. Not a difficulty and not a tutorial — a mode where the game cannot end, so the four
      movements can be checked one at a time without the belt trying to kill you.
 
@@ -1738,7 +1744,7 @@ const PRESETS = {
      the run is over before you have proved anything, which makes the one thing you need to test the
      one thing you cannot test. */
   calib: { label:'CALIBRATE', sub:'nothing can kill you — prove each movement works',
-           lanes:false, mode:'legs',  camera:true, sandbox:true },
+           lanes:false, mode:'legs',  camera:true, sandbox:true, turnSteer:true },
 };
 
 const Mode = {
@@ -3591,9 +3597,9 @@ const BodyDrive = {
   thr:0,                       /* forward throttle 0..1, after the rep hold */
   /* `hipRaw` is what the camera said this frame; `hipX` is that low-passed. Everything that steers
      reads `hipX`, because the raw value carries the player's footfalls — see `steerTau`. */
-  hipRaw:0, hipX:0, centre:0, haveCentre:false,
+  hipRaw:0, hipX:0, centre:0, haveCentre:false, seedBuf:[],
   /* run-direction steering inputs, smoothed the same way and for the same reason as hipX */
-  swRatio:1, noseOff:0, turnRaw:0, turn:0,
+  swRatio:1, noseOff:0, turnSin:0, turnRaw:0, turn:0,
   seenT:-99,                   /* s since the last camera frame — see step() */
 
   /* THE PRACTICE PERIOD. A free run holds the belt at its lowest tier, skips every surge and
@@ -3603,7 +3609,7 @@ const BodyDrive = {
      control scheme while the belt is trying to kill you tells you nothing about the controls. */
   ok4:{ run:false, steer:false, jump:false, duck:false },
   reset(){ this.cad=0; this.thr=0; this.hipRaw=0; this.hipX=0;
-           this.centre=0; this.haveCentre=false; this.seenT=-99;
+           this.centre=0; this.haveCentre=false; this.seedBuf.length=0; this.seenT=-99;
            this.ok4.run=false; this.ok4.steer=false; this.ok4.jump=false; this.ok4.duck=false; },
   /* every input confirmed? `practice()` is what the belt and the spawner read */
   allOk(){ const k=this.ok4; return k.run && k.steer && k.jump && k.duck; },
@@ -3619,6 +3625,9 @@ const BodyDrive = {
   /* per-player numbers from acclimation. Falls back to the tuning defaults for anything the stage
      did not measure, so a skipped step degrades to the population value rather than to zero. */
   cadFull: 0, turnRatio: 0, swSquare: 0,
+  /* Forget where "straight ahead" was and measure it again. Called when calibration completes, which
+     is the one moment the player has just been told where to stand. */
+  recentre(){ this.haveCentre = false; this.seedBuf.length = 0; },
   setCal(c){
     if (!c) return;
     this.cadFull   = c.cadFull   || 0;
@@ -3629,7 +3638,10 @@ const BodyDrive = {
   /* the pose backend reports these every frame */
   setCadence(c){ this.cad = c; this.seenT = 0; },
   /* run DIRECTION: shoulder foreshortening for magnitude and the gate, nose offset for the side */
-  setTurn(swRatio, noseOff){ this.swRatio = swRatio; this.noseOff = noseOff; },
+  setTurn(swRatio, noseOff, turnSin){
+    this.swRatio = swRatio; this.noseOff = noseOff;
+    this.turnSin = turnSin || 0;
+  },
   setHip(x){
     this.hipRaw = x;
     /* Self-seeded, like the jump machine's ankle baseline, and for the same reason: `hipX` is
@@ -3640,7 +3652,19 @@ const BodyDrive = {
        The FIRST frame seeds both the smoothed value and the centre. Seeding only the centre would
        leave `hipX` at 0 while the centre sat at 0.42, so the player would be commanded hard to one
        side for the first half second of every run. */
-    if (!this.haveCentre){ this.centre = x; this.hipX = x; this.haveCentre = true; }
+    /* SEEDED FROM A MEDIAN, not from one frame. A single frame decides where "straight ahead" is for
+       the whole session, and the frame it used was the first one of the session — taken during the
+       framing check with the arms overhead, quite possibly mid-step and not where the player intends to
+       stand. Get that wrong by more than `centreHold` and the centre STOPS TRACKING, so the game
+       commands a permanent lateral push that the player cannot correct by standing anywhere sensible.
+       A median over the first ~0.6s is immune to a single bad frame and to a footfall. */
+    if (!this.haveCentre){
+      this.hipX = x;
+      this.seedBuf.push(x);
+      const b = this.seedBuf.slice().sort((p,q)=>p-q);
+      this.centre = b[b.length >> 1];
+      if (this.seedBuf.length >= 16){ this.haveCentre = true; this.seedBuf.length = 0; }
+    }
   },
 
   /* Forward throttle from cadence, with the rep hold. Called once per fixed step. */
@@ -3662,12 +3686,23 @@ const BodyDrive = {
 
        Smoothed on the same constant as the hip signal, because a turned runner's shoulders also rock
        with their footfalls and the fix is identical. */
-    const sq = this.swSquare > 0 ? this.swSquare : 0;
-    const gate = this.turnRatio > 0 ? this.turnRatio : BD.turnRatioDefault;
-    if (sq > 0 && this.swRatio < BD.turnGate){
-      const depth = clamp01((BD.turnGate - this.swRatio)/Math.max(0.001, BD.turnGate - gate));
-      this.turnRaw = depth * (this.noseOff < 0 ? -1 : 1);
-    } else this.turnRaw = 0;
+    /* THE SIGNED SINE OF THE BODY TURN, from shoulder depth — see `turnSin` in pose/body.js.
+
+       This replaces shoulder foreshortening for magnitude and the nose offset for the side, both of
+       which were measurably wrong for the job. Foreshortening is a ratio against a width captured once
+       at one distance, so standing 20% further back than at calibration read as a permanent 0.400 steer
+       with nobody turning; and the nose offset moves 0.005 for a real 25 degree body turn, less than
+       the 0.021 that stepping sideways produces through perspective, so the SIDE was picked by noise.
+       Together those are exactly the reported bug: the penguin faces one way and correcting it does
+       not work, because the correction is read with the wrong sign.
+
+       `turnSin` needs no calibration and cannot drift with distance, so this now works on a first run
+       with nothing measured — which is also why the old `swSquare > 0` gate is gone. */
+    const ts = this.turnSin;
+    const dead = BD.turnDead;
+    const full = Math.max(dead + 0.02, BD.turnFull);
+    const mag = Math.abs(ts) <= dead ? 0 : clamp01((Math.abs(ts) - dead)/(full - dead));
+    this.turnRaw = mag * (ts < 0 ? -1 : 1);
     if (dt > 0) this.turn += (this.turnRaw - this.turn)*(1 - Math.exp(-dt/BD.steerTau));
 
     const raw = clamp01((this.cad - BD.cadIdle)/Math.max(0.01, BD.cadFull - BD.cadIdle));
@@ -3716,7 +3751,11 @@ const BodyDrive = {
 
        Position steering stays as the fallback and as a setting, because it is the one measured to
        work end to end and this is the riskier of the two on a real body. `turnAsSteer` picks. */
-    if (Settings.turnSteer && this.swSquare > 0){
+    /* No `swSquare > 0` any more: turn steering used to be gated behind a calibrated square-on shoulder
+       width, so a player who skipped or never reached the acclimation stage silently got hip-position
+       steering instead and had no way to know which scheme they were fighting. `turnSin` is
+       self-normalising, so this works on a first run. */
+    if (Settings.turnSteer){
       /* a heading, so it drives toward an offset rather than commanding a raw velocity — same
          position-error shape as below, which is what keeps it settling instead of sliding */
       const target = clamp(this.turn, -1, 1) * playLim();
@@ -4060,6 +4099,9 @@ const Cam3 = {
   applyMoveCal(){
     const c = this.cal && this.cal.cal;
     if (c) BodyDrive.setCal(c);
+    /* and re-measure the steering centre from where they are standing NOW, rather than from wherever
+       they happened to be on the first frame of the session */
+    BodyDrive.recentre();
   },
 
   beginCalibration(){
@@ -5142,6 +5184,11 @@ const Settings = { auto:false, sound:true, shake:true, lanes:true, camera:false,
   mode:'mixed',
   /* CALIBRATE mode: no obstacles, no walls, no death, belt held calm. See PRESETS.calib. */
   sandbox:false,
+  /* Steer by which way the body is TURNED rather than by where it is standing. This was previously a
+     key on one preset that `applyPreset` never copied anywhere, so `Settings.turnSteer` was undefined
+     and run-direction steering had never once run — every session was silently on hip position, which
+     is the scheme with the drifting centre the player could not correct. */
+  turnSteer:true,
   quality: (inputMode==='touch') ? 3 : 2 };
 
 const TWEEN = [];
@@ -5319,6 +5366,7 @@ const UI = {
       /* CALIBRATE is a mode rather than a bundle of switches, so the flag is set before anything reads
          it — the belt tier, the spawner and every death path all consult it. */
       Settings.sandbox = !!P0.sandbox;
+      if (P0.turnSteer !== undefined) Settings.turnSteer = !!P0.turnSteer;
       /* nothing to survive means nothing to score, and a workout structure in a sandbox would keep
          announcing rounds nobody is doing */
       if (Settings.sandbox) Settings.hiit = false;

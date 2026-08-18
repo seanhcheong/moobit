@@ -97,6 +97,10 @@ export const CONFIG = {
   /* ---- jump — a control input, not a rep -------------------------------------------- */
   jump: {
     takeoffRise: 0.055,    // x legLength above the standing ankle line — fires here, at takeoff
+    /* Multiples of `ankleAlt` that the takeoff rise must ALSO clear, so a running flight phase cannot
+       fire a jump while a deliberate jump out of a run still can. 1.2 leaves 45% margin over the worst
+       measured stride and still fires a real jump with 70% to spare — see the table in jump.js. */
+    strideK: 1.2,
     bigRise: 0.13,         // x legLength — above this the game gets a full-height jump
     landRise: 0.020,       // x legLength — back below this counts as landed
     minUpVel: 0.004,       // per frame, must still be going up when it fires
