@@ -206,6 +206,10 @@ export const CONFIG = {
     windowMs: 4000,        // rolling window. 4s, not 2: sigma from 30 samples carries 13% error.
     assumedFps: 30,        // only sizes the ring; the real rate is whatever it turns out to be
     minSamples: 40,        // below this, report 0 rather than a figure nobody should trust
+    /* The amplitude capture gets a lower bar than the rolling curvature figure, because it only has the
+       A-pose to work with — about a second. A shorter window is a noisier estimate, which is acceptable
+       here only because `capMul` bounds what a wrong answer can do. */
+    minAmpSamples: 24,
     /* The floor is the MINIMUM of the rolling medians over this much history, sampled this often.
        Measured reason: slow movement leaves the median untouched (a 0.5Hz and a 1.0Hz squat both read
        1.00x) but a jumping jack's fast limb reversals inflate it 2.19x, and no statistic inside a 4s
@@ -246,11 +250,16 @@ export const CONFIG = {
        difference has sqrt(2) the sigma, and a mean absolute value 0.798 of that, summed over x and y);
        4.0 leaves room for breathing without admitting a step. */
     stillK: 4.0,
-    /* No noise-derived floor may exceed this multiple of the fixed threshold it sits under. A
-       backstop: getting the stillness gate wrong once inflated a gate 13x and turned running off
-       completely, and the failure mode of a control that silently stops working is bad enough to
-       deserve a hard bound rather than only a careful measurement. */
-    capMul: 3.0,
+    /* No noise-derived floor may exceed this multiple of the fixed threshold it sits under.
+
+       1.4, not 3.0. The looser value was not a backstop at all: 3x on `run.altGate` is 0.21, and a body
+       running in place only produces 0.11-0.13, so the "backstop" still permitted a gate that no real
+       movement could clear — and that is exactly what happened to a player, whose running stopped
+       working entirely after a contaminated capture. A bound has to be chosen against the SIGNAL it
+       must not exclude, not as a round number. At 1.4 the worst case is 0.098 against a real 0.11-0.13,
+       and the measured benefit at high noise survives: the gate needed to clear filtered noise at
+       landmark sigma 0.012 was ~0.096, which fits underneath. */
+    capMul: 1.4,
     /* What counts as a camera worth warning the player about, in normalised image units. Anchored to
        the injected levels the smoothing was tuned against: 0.004 produced nothing, 0.008 produced 21
        phantom jumps in 20 seconds unfiltered. */

@@ -587,6 +587,9 @@ const TUNING = {
     airDrag: 0.34,       // fraction of belt drag that still applies mid-air
     // tier speeds: long plateaus, hard step-ups
     tiers:  [10.0, 11.2, 12.4, 13.4, 14.6, 15.8, 17.0, 18.0],
+    /* what CALIBRATE drags at. A third of tier 0, so a body running at ~11 clearly gains ground and a
+       body standing still clearly loses it, without either being violent. */
+    calmSpeed: 3.4,
     tierAt: [0, 240, 560, 980, 1520, 2200, 3050, 4100], // distance (u) each tier begins
     stepTime: 0.55,      // s to ease into a new tier
     surge:  { every:[13,21], warn:0.80, mul:1.36, ramp:0.45, hold:2.40, ease:0.9 },
@@ -2711,8 +2714,25 @@ function stepPlayer(dt){
       if (iz === 0) iz = BodyDrive.iz();
     }
     if (In.autoRun) iz = Math.min(iz, -1);              // auto-run holds forward throttle
-    const l = Math.hypot(ix,iz);
-    if (l > 1){ ix/=l; iz/=l; }
+    /* THE DIAGONAL NORMALISE APPLIES TO A STICK, NOT TO A BODY.
+
+       Dividing both axes by the vector length is the right rule for a keyboard or a thumbstick, where
+       holding two directions must not be faster than holding one. It is the wrong rule here, because
+       the two axes come from two unrelated body signals: forward is how hard you are RUNNING and
+       lateral is which way you are TURNED. Normalising means turning throttles your running.
+
+       Measured, and it is not subtle: with a full lateral command the forward speed collapsed from
+       -10.89 to -5.00, which against a belt dragging at 10 is the difference between moving forward and
+       being carried backwards no matter how hard you run. Combined with a steering bug that pinned the
+       command to one side, that is exactly "it's not picking up the running in place to move forward".
+
+       So each axis is clamped on its own when the body drives, and the stick rule is kept for a stick. */
+    if (BodyDrive.active()){
+      ix = clamp(ix, -1, 1); iz = clamp(iz, -1, 1);
+    } else {
+      const l = Math.hypot(ix,iz);
+      if (l > 1){ ix/=l; iz/=l; }
+    }
   }
 
   /* ---------- jump timers (coyote + buffer, both widened on touch) ---------- */
@@ -4467,7 +4487,19 @@ const Belt = {
     const working = wantWork && this.effortT < RN.effortBudget;
     this.effort = damp(this.effort, working ? 1 : 0, working ? RN.effortUp : RN.effortDown, dt);
     const tierWant = this.tierSpeed(this.tier) * lerp(1, RN.workBeltMul, this.effort);
-    const want = this.hold ? 0 : tierWant;
+    /* CALIBRATE runs the belt slowly, and this is not a nicety.
+
+       A body running flat out reaches about 11 u/s. Tier 0 drags at 10, so at full effort the player
+       nets barely 1 forward — and any lateral input at all used to eat half the throttle, which put the
+       net the other way. The mode where somebody is checking whether running registers AT ALL is the
+       last place the belt should be able to win, so it drags gently: running clearly carries you
+       forward, standing still drifts you gently back to the rear wall, and the difference between the
+       two is unmistakable.
+
+       Not keyed to `Settings.hiit` either. Setting hiit false in the preset is what removed the eased
+       belt and made CALIBRATE drag at 10 while an ordinary session drags at 5 — the mode for testing
+       movement had a FASTER belt than the game. */
+    const want = this.hold ? 0 : (Settings.sandbox ? B.calmSpeed : tierWant);
     const rate = Math.abs(want - this.base)/B.stepTime;
     this.base = moveTo(this.base, want, Math.max(rate, 1.2)*dt);
 

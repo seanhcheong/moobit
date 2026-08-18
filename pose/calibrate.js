@@ -124,7 +124,13 @@ export function begin(c){ c.reset(); c.stage = STAGE.FRAME; }
    told, which is the calibrator's business; and it is a query rather than a callback so that both hosts
    ask one question instead of each re-deciding which stages count. */
 export function wantsStillness(c){
-  return c.stage === STAGE.FRAME || c.stage === STAGE.APOSE;
+  /* APOSE ONLY. Including FRAME was a real bug with a real cost: the framing stage is where the player
+     shuffles back and forth to get their whole body in shot, so it is a MOVING stage by definition —
+     the instruction on screen is about where to stand, not about holding still. Measured, capturing
+     through it inflated the ankle amplitude figure 5x, which pushed the cadence gate from 0.07 to 0.21
+     and stopped running in place registering AT ALL. A noise measurement that disables a control is
+     worse than no noise measurement. */
+  return c.stage === STAGE.APOSE;
 }
 
 /* ---- stage 1: framing, with guidance specific enough to act on -------------------------- */

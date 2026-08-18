@@ -373,7 +373,7 @@ function sigmaOf(s, c){
 
 /* the AMPLITUDE sigma: the robust magnitude of the value itself, for a channel that rests near zero */
 function ampSigmaOf(s, c){
-  if (!c.abuf || c.an < C.minSamples) return 0;
+  if (!c.abuf || c.an < (C.minAmpSamples || C.minSamples)) return 0;
   return medianOf(s, c.abuf, c.an) * MED_ABS_TO_SIGMA;
 }
 
