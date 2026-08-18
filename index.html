@@ -217,6 +217,12 @@
   #cadChip.practice{border-color:rgba(255,214,138,.5)}
   #cadChip.practice .cadLbl{color:#ffd68a;opacity:.9}
   #mvSteer{font-variant-numeric:tabular-nums;min-width:34px}
+  /* A single line saying how many of the four are confirmed. The lamps say WHICH; this says whether
+     you are done, which is the question actually being asked in CALIBRATE. */
+  #mvDone{font-size:9px;letter-spacing:.1em;margin-top:4px;color:#8f9a96}
+  #mvDone.all{color:#8fe0c4}
+  #cadChip.sandbox{border-color:rgba(124,196,255,.55)}
+  #cadChip.sandbox .cadLbl{color:#9fd4ff;opacity:.95}
   /* THE RECORDING CHIP. Tappable, and it has to be, because the whole flow is: arm it in Settings,
      close the panel, perform the movement, stop it. If stopping meant reopening Settings then the
      last thing in every trace would be a player walking back to the phone, which is noise recorded
@@ -331,7 +337,8 @@
     <div id="roundChip">ROUND 1/10</div>
     <div id="cadChip"><div class="cadLbl">STEPS / MIN</div><div id="cadNum" class="num">0</div>
       <div id="cadBar"><div id="cadFill"></div></div>
-      <div id="mvRow"><span id="mvSteer">–</span><span id="mvJump">JUMP</span><span id="mvDuck">DUCK</span></div></div>
+      <div id="mvRow"><span id="mvRun">RUN</span><span id="mvSteer">–</span><span id="mvJump">JUMP</span><span id="mvDuck">DUCK</span></div>
+      <div id="mvDone">RUN · TURN · JUMP · DUCK</div></div>
 
     <div id="wallCue">
       <div id="wallEx" class="num">SQUAT</div>
@@ -437,7 +444,7 @@
       <div class="lbl" style="margin-bottom:6px">Settings</div>
       <div class="row"><span>Session</span>
         <div class="seg" id="segPreset">
-          <div data-v="lanes" data-on="1">LANES</div><div data-v="free">FREE RUN</div>
+          <div data-v="lanes" data-on="1">LANES</div><div data-v="free">FREE RUN</div><div data-v="calib">CALIBRATE</div>
         </div>
       </div>
       <div id="presetSub">three lanes, lunge to change</div>
@@ -448,6 +455,7 @@
           <div data-v="mixed" data-on="1">MIXED</div><div data-v="legs">LEGS</div>
         </div>
       </div>
+      <button class="btn alt" id="btnRecal" style="width:100%;margin-bottom:8px">RE-CALIBRATE</button>
       <div class="row"><span>Record movement</span><div class="toggle" id="tgRec" data-on="0"></div></div>
       <div id="recSub">off</div>
       <div class="row"><span>Auto-run</span><div class="toggle" id="tgAuto" data-on="0"></div></div>
@@ -1722,6 +1730,15 @@ const PRESETS = {
   turnSteer:true, camera:null },
   free:  { label:'FREE RUN', sub:'run in place to move, step to steer',
            lanes:false, mode:'legs',  camera:true },
+  /* CALIBRATE. Not a difficulty and not a tutorial — a mode where the game cannot end, so the four
+     movements can be checked one at a time without the belt trying to kill you.
+
+     It exists because judging a control scheme while dying tells you nothing about the control
+     scheme. Standing still to fiddle with framing means the belt carries you off the back lip and
+     the run is over before you have proved anything, which makes the one thing you need to test the
+     one thing you cannot test. */
+  calib: { label:'CALIBRATE', sub:'nothing can kill you — prove each movement works',
+           lanes:false, mode:'legs',  camera:true, sandbox:true },
 };
 
 const Mode = {
@@ -2716,13 +2733,13 @@ function stepPlayer(dt){
     /* being knocked down in the hazard zone still has to kill you: without this the belt
        drags the limp body past the lip, the floor drops away, and the run hangs for the
        four seconds it takes to fall before anything resolves. */
-    if (P.z > B.rear && !P.dying && Game.state === 'play'){
+    if (P.z > B.rear && !P.dying && Game.state === 'play' && Game.deadly()){
       P.dying = true; P.deadT = 0;
       P.rv.y = Math.max(P.rv.y, 5.0);
       P.rav.set(rndR(-8,8), rndR(-4,4), B.rearThrow.spin*0.7);
       Fx.flash(0.7); Cam.shake(5.0); Sfx.death();
     }
-    if (P.rcy < -25 && !P.dying && Game.state === 'play'){ P.dying = true; P.deadT = 0.85; }
+    if (P.rcy < -25 && !P.dying && Game.state === 'play' && Game.deadly()){ P.dying = true; P.deadT = 0.85; }
     const floorY = (P.z > B.rear + 0.4) ? -60 : RAG_FLOOR;
     if (P.rcy < floorY){
       P.rcy = floorY;
@@ -2863,7 +2880,7 @@ function stepPlayer(dt){
   if (P.z < frontLimit){
     const closing = -(P.vz + drag);
     P.z = frontLimit;
-    if (closing > B.frontBonk.ragdollAt){
+    if (closing > B.frontBonk.ragdollAt && Game.deadly()){
       startRagdoll(0, B.frontBonk.up, B.frontBonk.push*1.5, 0, 0.4, closing);
       Fx.flash(0.5);
     } else if (closing > 0.6){
@@ -2878,10 +2895,19 @@ function stepPlayer(dt){
 
   /* ---------- rear lip: thrown off the back ---------- */
   if (P.z > B.rear && !P.dying && Game.state === 'play'){
-    P.dying = true; P.deadT = 0;
-    startRagdoll(rndR(-3,3), B.rearThrow.up, B.rearThrow.back, 0.3, 0.5, 16);
-    P.rav.set(rndR(-9,9), rndR(-4,4), B.rearThrow.spin);
-    Fx.flash(0.85); Cam.shake(6.5); Sfx.death();
+    if (!Game.deadly()){
+      /* CALIBRATE: a wall, not a cliff. This is THE path that made calibration impossible — standing
+         still to sort out framing means the belt walks you backwards, and the run ended before any
+         movement had been proved. Held just inside the lip with the backward drift cancelled, so
+         standing still is a stable place to stand rather than a countdown. */
+      P.z = B.rear - 0.05;
+      if (P.vz > 0) P.vz = 0;
+    } else {
+      P.dying = true; P.deadT = 0;
+      startRagdoll(rndR(-3,3), B.rearThrow.up, B.rearThrow.back, 0.3, 0.5, 16);
+      P.rav.set(rndR(-9,9), rndR(-4,4), B.rearThrow.spin);
+      Fx.flash(0.85); Cam.shake(6.5); Sfx.death();
+    }
   }
 
   /* ---------- facing, banking, lean ---------- */
@@ -3581,7 +3607,10 @@ const BodyDrive = {
            this.ok4.run=false; this.ok4.steer=false; this.ok4.jump=false; this.ok4.duck=false; },
   /* every input confirmed? `practice()` is what the belt and the spawner read */
   allOk(){ const k=this.ok4; return k.run && k.steer && k.jump && k.duck; },
-  practice(){ return this.active() && !this.allOk(); },
+  /* Sandbox holds practice open forever, which is what keeps the spawner and the belt tier off. The
+     four checks still latch and still display — you just never get graduated out of them, because in
+     CALIBRATE the point is the checking rather than what comes after it. */
+  practice(){ return Settings.sandbox || (this.active() && !this.allOk()); },
 
   /* Free run + camera. Lanes on means the lunge owns steering, and `Signal.laneChange` is gated
      on `Run.lanes` anyway, so the two schemes can never both be live. */
@@ -5111,6 +5140,8 @@ const Settings = { auto:false, sound:true, shake:true, lanes:true, camera:false,
      than MIXED, it is narrower, and it exists so the two most reliably detected movements can be
      played on their own while the others are still being worked on. */
   mode:'mixed',
+  /* CALIBRATE mode: no obstacles, no walls, no death, belt held calm. See PRESETS.calib. */
+  sandbox:false,
   quality: (inputMode==='touch') ? 3 : 2 };
 
 const TWEEN = [];
@@ -5239,6 +5270,19 @@ const UI = {
       else { UI.setToggle($('tgRec'), false);
         $('recSub').textContent = 'needs the camera on'; }
     });
+    /* RE-CALIBRATE, reachable at any time. Previously the only way back into onboarding was to toggle
+       the camera off and on, which also threw away the saved fit — so a player whose framing had
+       drifted had no way to redo it without losing everything already measured. */
+    $('btnRecal').addEventListener('click', async (e)=>{ e.stopPropagation(); unfocus(e);
+      if (!Cam3.ready){
+        const okCam = await Cam3.enable();
+        UI.setToggle($('tgCam'), !!okCam);
+        if (!okCam) return;
+      }
+      BodyDrive.ok4.run = BodyDrive.ok4.steer = BodyDrive.ok4.jump = BodyDrive.ok4.duck = false;
+      UI.toggleSettings(false);
+      Cam3.beginCalibration();
+    });
     /* the chip itself saves, so the flow does not require walking back to the phone mid-trace */
     $('recChip').addEventListener('click',(e)=>{ e.stopPropagation(); unfocus(e); Cam3.recSave(); });
     tg($('tgAuto'),'auto');
@@ -5272,6 +5316,13 @@ const UI = {
          that does not need a camera should not switch one off that the player deliberately turned
          on. Only FREE RUN requires it, and if permission is refused the preset says so rather than
          leaving the player in a mode with no way to move. */
+      /* CALIBRATE is a mode rather than a bundle of switches, so the flag is set before anything reads
+         it — the belt tier, the spawner and every death path all consult it. */
+      Settings.sandbox = !!P0.sandbox;
+      /* nothing to survive means nothing to score, and a workout structure in a sandbox would keep
+         announcing rounds nobody is doing */
+      if (Settings.sandbox) Settings.hiit = false;
+      BodyDrive.ok4.run = BodyDrive.ok4.steer = BodyDrive.ok4.jump = BodyDrive.ok4.duck = false;
       if (P0.camera === true && !Settings.camera){
         const okCam = await Cam3.enable();
         UI.setToggle($('tgCam'), !!okCam);
@@ -5279,6 +5330,10 @@ const UI = {
       }
       Cam3.syncCalOrder();
       UI.refreshHints();
+      /* Entering CALIBRATE from a finished run has to clear the wreckage: the state machine is left
+         in 'dead' and the sandbox has no way to end, so without this the player is stuck looking at
+         a clock-out card in a mode that cannot produce one. */
+      if (Game.state === 'dead' || Settings.sandbox) Game.restart();
     };
     for (const child of $('segPreset').children){
       child.addEventListener('click',(e)=>{ e.stopPropagation(); unfocus(e);
@@ -5431,7 +5486,11 @@ const UI = {
   cadence(){
     const c = this.cadChip;
     if (!c) return;
-    const on = BodyDrive.active();
+    /* Visible whenever the free run is driving, and ALWAYS in CALIBRATE — where the panel is not a
+       readout on the mode, it is the mode. A player who has just picked CALIBRATE needs to see the four
+       things being asked of them before the camera is up, not after; and while the camera is still
+       loading, "0/4 — STILL NEED RUN · TURN · JUMP · DUCK" is the correct and useful thing to say. */
+    const on = BodyDrive.active() || Settings.sandbox;
     if (this._cadOn !== on){ this._cadOn = on; c.classList.toggle('on', on); }
     if (!on) return;
     const spm = Math.round(BodyDrive.cad*60);
@@ -5456,6 +5515,7 @@ const UI = {
       this.cadChip.querySelector('.cadLbl').textContent = pr ? 'TRY EACH MOVE' : 'STEPS / MIN';
     }
     const K = BodyDrive.ok4;
+    if (this._mvOkR !== K.run){ this._mvOkR = K.run; $('mvRun').classList.toggle('done', K.run); }
     if (this._mvOkS !== K.steer){ this._mvOkS = K.steer; this.mvSteer.classList.toggle('done', K.steer); }
     if (this._mvOkJ !== K.jump){ this._mvOkJ = K.jump; this.mvJump.classList.toggle('done', K.jump); }
     if (this._mvOkD !== K.duck){ this._mvOkD = K.duck; this.mvDuck.classList.toggle('done', K.duck); }
@@ -5474,6 +5534,27 @@ const UI = {
     if (this._mvJl !== jl){ this._mvJl = jl; this.mvJump.classList.toggle('lit', jl); }
     const dk = !!Signal.duck;
     if (this._mvDk !== dk){ this._mvDk = dk; this.mvDuck.classList.toggle('lit', dk); }
+    /* RUN lights while the throttle is actually being given, which is the honest indicator: cadence
+       can be non-zero while the rep hold has the throttle pinned, and what the player wants to know
+       is whether the game is moving them. */
+    const rl = BodyDrive.thr > 0.12;
+    if (this._mvRl !== rl){ this._mvRl = rl; $('mvRun').classList.toggle('lit', rl); }
+
+    const nOk = (K.run?1:0)+(K.steer?1:0)+(K.jump?1:0)+(K.duck?1:0);
+    if (this._mvN !== nOk){
+      this._mvN = nOk;
+      const miss = [];
+      if (!K.run) miss.push('RUN');
+      if (!K.steer) miss.push('TURN');
+      if (!K.jump) miss.push('JUMP');
+      if (!K.duck) miss.push('DUCK');
+      $('mvDone').textContent = nOk === 4 ? 'ALL FOUR CONFIRMED' : `${nOk}/4 — STILL NEED ${miss.join(' · ')}`;
+      $('mvDone').classList.toggle('all', nOk === 4);
+    }
+    if (this._mvSb !== Settings.sandbox){
+      this._mvSb = Settings.sandbox;
+      c.classList.toggle('sandbox', Settings.sandbox);
+    }
   },
   /* called from the jump path, so the indicator latches long enough to be seen at 60Hz */
   flashJump(){ this._mvJumpT = 18; },
@@ -6057,8 +6138,12 @@ const Game = {
     In.demo = false;
     UI.hint.style.opacity = '0';
   },
+  /* Can the run end at all? One predicate, read by every death path, so CALIBRATE cannot be defeated
+     by a path somebody forgot about. */
+  deadly(){ return !Settings.sandbox; },
   over(){
     if (this.state !== 'play') return;
+    if (!this.deadly()) return;
     this.state = 'dead';
     UI.moves(false);
     Score.best = Math.max(Score.best, Score.total());
