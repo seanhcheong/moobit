@@ -32,13 +32,15 @@
     padding-top:env(safe-area-inset-top); padding-bottom:env(safe-area-inset-bottom);
   }
   #wrap{position:fixed;inset:0;display:flex;flex-direction:column}
-  #stage{position:relative;flex:1;min-height:0;background:#080b12}
+  /* `overflow:hidden` so the HUD column cannot spill past the video into the control bars below it,
+     which it did once the tune row was added and made the first control unreachable */
+  #stage{position:relative;flex:1;min-height:0;background:#080b12;overflow:hidden}
   /* the preview is mirrored because users expect a mirror. The DATA is never mirrored. */
   #cam{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;transform:scaleX(-1)}
   #ov{position:absolute;inset:0;width:100%;height:100%}
 
-  #hud{position:absolute;left:10px;top:10px;display:flex;flex-direction:column;gap:8px;
-       max-width:min(46vw,420px);pointer-events:none}
+  #hud{position:absolute;left:10px;top:10px;bottom:10px;display:flex;flex-direction:column;gap:8px;
+       max-width:min(46vw,420px);pointer-events:none;overflow:hidden}
   .card{background:var(--panel);border:1px solid var(--edge);border-radius:12px;padding:9px 11px;
         backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
   .k{color:var(--dim)}
@@ -72,6 +74,82 @@
         text-align:center;padding:24px;line-height:1.7}
   #boot code{background:#1b2436;padding:2px 6px;border-radius:5px;color:var(--hi)}
   .hide{display:none!important}
+
+  /* ---- THE TRACE PLOTS ------------------------------------------------------------------
+     The reason this page needs them: a number in a table tells you where a signal IS, and every
+     question worth asking here is about where it has BEEN. Whether a threshold is crossed cleanly or
+     scraped, whether two ankles are out of phase, whether a spike was the body or the camera — all of
+     those are shapes over a few seconds, and none of them is visible one frame at a time.
+
+     Each row draws its channel, its threshold as a draggable line, and — the reason all the noise
+     measurement exists — the measured noise as a shaded band around zero. A threshold sitting inside
+     that band is a threshold noise will cross on its own, and here you can SEE that rather than
+     having to work it out. */
+  #plots{position:absolute;right:8px;top:8px;bottom:8px;width:min(46vw,460px);
+    background:var(--panel);border:1px solid var(--edge);border-radius:12px;padding:7px 8px 6px;
+    backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+    display:flex;flex-direction:column;gap:5px;z-index:3}
+  #plots.hide{display:none!important}
+  #plotHead{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+  #plotHead h2{margin:0}
+  #plotWin{font-size:10px;color:var(--dim)}
+  #plotCv{flex:1;min-height:0;width:100%;touch-action:none;cursor:ns-resize}
+  #plotFoot{font-size:10px;color:var(--dim);line-height:1.35}
+
+  /* the numeric strip under the plots: what the spec asks for in one row per channel */
+  #noiseTbl{font-size:10.5px;border-collapse:collapse;width:100%}
+  #noiseTbl th{color:var(--dim);font-weight:500;text-align:right;padding:0 0 2px 6px;font-size:9.5px;
+    letter-spacing:.06em;text-transform:uppercase}
+  #noiseTbl td{text-align:right;padding:1px 0 1px 6px;font-variant-numeric:tabular-nums}
+  #noiseTbl td:first-child,#noiseTbl th:first-child{text-align:left}
+  #noiseTbl tr.bad td{color:var(--bad)}
+  #noiseTbl tr.warn td{color:var(--warn)}
+
+  /* framing warnings: the spec's three, plus what to do about each */
+  #warn{position:absolute;left:10px;bottom:10px;max-width:min(50vw,430px);display:none;
+    flex-direction:column;gap:4px;z-index:4}
+  #warn.on{display:flex}
+  #warn div{background:rgba(58,26,10,.86);border:1px solid rgba(255,196,82,.5);border-radius:9px;
+    padding:5px 9px;font-size:11px;color:var(--warn);letter-spacing:.03em}
+
+  /* live tuning. Every one of these recomputes from raw, so a replayed trace re-renders under the
+     new value rather than showing a cached one — that is the whole reason to have sliders here. */
+  #tune{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:6px 10px;background:#101623;
+    border-top:1px solid var(--edge);font-size:11px;color:var(--dim)}
+  #tune label{display:flex;align-items:center;gap:5px;white-space:nowrap}
+  #tune input[type=range]{width:88px}
+  #tune output{color:var(--ink);font-variant-numeric:tabular-nums;min-width:34px;display:inline-block}
+  #tune .sep{width:1px;align-self:stretch;background:var(--edge);margin:0 2px}
+
+  /* ground truth. Big, because whoever taps these is watching the body and not the screen. */
+  #labs{display:none;flex-wrap:wrap;gap:5px;padding:6px 10px;background:#1c1216;
+    border-top:1px solid rgba(255,120,120,.3)}
+  #labs.on{display:flex}
+  #labs button{font-size:12px;padding:9px 12px;background:#3a1a20;color:#ffd9d9;
+    border-color:rgba(255,120,120,.4)}
+  #labs button.hit{background:#ff7a7a;color:#2a0d10;font-weight:700}
+  #labs .n{color:var(--dim);font-size:10.5px;align-self:center;margin-left:4px}
+
+  /* replay: a loaded trace, scrubbed */
+  #scrubRow{display:none;align-items:center;gap:8px;padding:6px 10px;background:#121a2a;
+    border-top:1px solid var(--edge);font-size:11px;color:var(--dim)}
+  #scrubRow.on{display:flex}
+  #scrub{flex:1}
+  #scrubAt{font-variant-numeric:tabular-nums;color:var(--ink);min-width:118px}
+
+  @media (max-width:820px){
+    /* Portrait phone: the traces take the bottom half of the stage rather than a side column, and the
+       HUD cards below the first two fold away. The two things worth watching are the body and the
+       traces, and on a phone held in one hand there is only room for both if everything else goes. */
+    /* 58%, not 46%: six rows in 46% of a phone stage is 40px each, and a 40px row with a header in it
+       has no room left for the line it exists to draw. The video only has to be big enough to confirm
+       the skeleton is tracking; the traces are what is being read. */
+    #plots{left:8px;right:8px;top:auto;bottom:8px;width:auto;height:58%}
+    #hud{max-width:56vw}
+    #hud .card:nth-child(n+2){display:none}
+    #warn{bottom:auto;top:6px;left:auto;right:10px;max-width:52vw}
+    #noiseTbl{font-size:10px}
+  }
 </style>
 </head>
 <body>
@@ -125,6 +203,47 @@
     <div id="big"><div id="repbig">0</div><div id="statebig">—</div></div>
     <div id="msg"></div>
     <div id="guide"></div>
+    <div id="warn"></div>
+
+    <div id="plots">
+      <div id="plotHead">
+        <h2>Traces</h2>
+        <span id="plotWin">6s · drag a threshold line</span>
+      </div>
+      <canvas id="plotCv"></canvas>
+      <table id="noiseTbl">
+        <thead><tr><th>channel</th><th>now</th><th>noise</th><th>thresh</th><th>σ</th></tr></thead>
+        <tbody id="noiseBody"></tbody>
+      </table>
+      <div id="plotFoot"></div>
+    </div>
+  </div>
+
+  <div id="scrubRow">
+    <span id="scrubAt">—</span>
+    <button id="bStepBack">◀</button>
+    <input type="range" id="scrub" min="0" max="100" value="0">
+    <button id="bStepFwd">▶</button>
+    <button id="bLive">Back to live</button>
+  </div>
+
+  <div id="labs">
+    <span class="n">GROUND TRUTH →</span>
+    <span class="n" id="labN">0 labels</span>
+  </div>
+
+  <div id="tune">
+    <label>infer <input type="range" id="tRate" min="5" max="30" step="1" value="30"><output id="oRate">30</output>Hz</label>
+    <span class="sep"></span>
+    <label>fcMin <input type="range" id="tFc" min="0.4" max="6" step="0.1" value="1.6"><output id="oFc">1.6</output></label>
+    <label>beta <input type="range" id="tBeta" min="0" max="3" step="0.05" value="0.9"><output id="oBeta">0.90</output></label>
+    <label><input type="checkbox" id="tSmooth" checked> filter</label>
+    <label><input type="checkbox" id="tRaw"> show raw</label>
+    <span class="sep"></span>
+    <span id="tOri">tilt —</span>
+    <span class="sep"></span>
+    <button id="bLoad">Load trace…</button>
+    <input type="file" id="fTrace" accept=".json,application/json" class="hide">
   </div>
 
   <div id="bar">
@@ -163,7 +282,8 @@
 import * as Det from './pose/detector.js';
 import * as Cal from './pose/calibrate.js';
 import * as Src from './pose/source.js';
-import { EX, EX_NAME } from './pose/config.js';
+/* CONFIG itself, not just the enums: this page edits thresholds live, which is its whole purpose. */
+import { EX, EX_NAME, CONFIG } from './pose/config.js';
 import { LM } from './pose/landmarks.js';
 
 const $ = (id)=>document.getElementById(id);
@@ -237,7 +357,19 @@ S.onResult = (res, t)=>{
    looking at directly — so being able to feed it a known body and inspect what came out is the
    feature, not a hole in it. `index.html` deliberately exposes nothing like this. */
 function PCtick(res, t){
+  /* A SECOND DETECTOR, fed the same frame with the filter forced off, purely so "show raw" has
+     something to draw. It is not the live one — running two costs a second pass over 33 landmarks and
+     the machines, which is cheap, and the alternative is either lying about what raw looks like or
+     plumbing a shadow copy through the filter itself. */
+  if ($('tRaw') && $('tRaw').checked && rawDet){
+    const was = CONFIG.smooth.on;
+    CONFIG.smooth.on = false;
+    Det.push(rawDet, res, t, null);
+    CONFIG.smooth.on = was;
+  }
   Det.push(D, res, t, sink);
+  if (replay.trace) return;              // a loaded trace owns the plots; live frames must not scribble
+  plotPush(t, D.body, rawDet ? rawDet.body : null);
   if (Det.recording(D)){
     const st = Det.recStats(D);
     $('bRec').textContent = 'Recording ' + st.frames + ' · ' + st.seconds.toFixed(0) + 's';
@@ -259,12 +391,320 @@ function PCtick(res, t){
   }
   paint();
   readout();
+  drawPlots();
+  framingWarn();
+  if (!(nTblT = (nTblT||0)) || performance.now() - nTblT > 400){ nTblT = performance.now(); noiseTable(); }
 }
+let nTblT = 0;
+/* the shadow detector for the raw overlay, created lazily so it costs nothing until asked for */
+let rawDet = null;
 window.PC = { get S(){ return S; }, get D(){ return D; }, get C(){ return C; },
-              Det, Cal, Src, tick: PCtick, ex: ()=>want };
+              get replay(){ return replay; },
+              Det, Cal, Src, tick: PCtick, ex: ()=>want,
+              plots: ()=>({ n: plot.n, chan: CHAN.map(c=>c.k) }),
+              cfgGet, cfgSet, loadTrace };
 S.onError = (e)=>{ flash('ERR ' + e.message, '--bad'); console.error(e); };
 
 /* ---- overlay --------------------------------------------------------------------------- */
+/* =====================================================================================
+   TRACES — a few seconds of each channel, its threshold, and the measured noise as a band.
+
+   WHY A BAND AND NOT JUST A LINE. Every question this page exists to answer is about whether a
+   threshold sits clear of the noise, and until now that was a comparison between two numbers in two
+   different tables. Drawn, it is immediate: the shaded region is what the camera does when the body
+   does nothing, and any threshold line inside it will be crossed by nothing happening.
+
+   THE THRESHOLD LINES ARE DRAGGABLE, and dragging writes straight into CONFIG. That is the point of
+   the whole page — move the line, watch the detection change on the same body, in the same light,
+   without a reload. On a loaded trace it re-runs the pipeline from the raw landmarks, so what you see
+   is what that threshold would have done to a movement that really happened.
+   ===================================================================================== */
+const CHAN = [
+  /* key, label, threshold path in CONFIG (null = no line), zero-centred?, fixed scale (null = auto) */
+  /* `scale` is a MINIMUM half-range, not a fixed one. Fixed scales left a running ankleSplit using a
+     fifth of its row while its threshold line sat almost on the axis — legible only if you already
+     knew what you were looking for. A minimum keeps a quiet channel from blowing up to fill the row
+     with noise, and autoscaling above it means a real movement uses the space it deserves. */
+  { k:'ankleSplit',   lab:'ankleSplit',   th:'run.minSplit',      sym:true,  scale:0.09 },
+  { k:'ankleAlt',     lab:'ankleAlt',     th:'run.altGate',       sym:false, scale:0.11 },
+  { k:'jumpRise',     lab:'jumpRise',     th:'jump.takeoffRise',  sym:false, scale:0.09 },
+  { k:'kneeStraight', lab:'kneeStraight', th:'crouch.enterKnee',  sym:false, scale:null  },
+  { k:'cadence',      lab:'cadence',      th:null,                sym:false, scale:1.5   },
+  { k:'hipX',         lab:'hipX',         th:null,                sym:true,  scale:0.20  },
+];
+const PLOT_SEC = 6;
+const PCAP = 400;                       // ring capacity: 6s of headroom at any plausible rate
+const plot = { t:new Float64Array(PCAP), n:0, head:0, v:{}, raw:{}, ev:[] };
+for (const c of CHAN){ plot.v[c.k] = new Float32Array(PCAP); plot.raw[c.k] = new Float32Array(PCAP); }
+
+function cfgGet(path){ let o = CONFIG; for (const p of path.split('.')) o = o && o[p]; return o; }
+function cfgSet(path, v){
+  const ps = path.split('.'); let o = CONFIG;
+  for (let i=0;i<ps.length-1;i++) o = o[ps[i]];
+  o[ps[ps.length-1]] = v;
+}
+
+function plotPush(tMs, body, rawBody){
+  /* Two different discontinuities, and they want opposite treatment.
+
+     A large FORWARD jump means the tab was backgrounded, the camera restarted, or another source took
+     over. Drawing through it puts one straight line across the gap, which reads as a real and very
+     fast movement, so the window starts over.
+
+     A sample from the PAST is an inference result that came back out of capture order — which really
+     happens, and often enough that clearing on it would blank the plot at random. Those are simply not
+     plotted: the axis is time, and a point cannot be inserted behind the pen. */
+  if (plot.n){
+    const prev = plot.t[(plot.head - 1 + PCAP) % PCAP];
+    if (tMs < prev) return;
+    if (tMs - prev > 1500) plotClear();
+  }
+  const i = plot.head;
+  plot.t[i] = tMs;
+  for (const c of CHAN){
+    plot.v[c.k][i] = body[c.k];
+    plot.raw[c.k][i] = rawBody ? rawBody[c.k] : body[c.k];
+  }
+  plot.head = (i + 1) % PCAP;
+  if (plot.n < PCAP) plot.n++;
+}
+function plotClear(){ plot.n = 0; plot.head = 0; plot.ev.length = 0; }
+/* event markers and label taps, drawn as ticks on the timeline */
+function plotMark(tMs, kind){
+  plot.ev.push({ t:tMs, kind });
+  while (plot.ev.length > 400) plot.ev.shift();
+}
+
+let drag = null;                        // { row, path } while a threshold line is being dragged
+const rowsGeom = [];                    // filled by drawPlots, read by the pointer handlers
+
+function drawPlots(){
+  const cv = $('plotCv');
+  if (!cv || $('plots').classList.contains('hide')) return;
+  const W = cv.clientWidth|0, H = cv.clientHeight|0;
+  if (!W || !H) return;
+  const dpr = Math.min(2, devicePixelRatio || 1);
+  if (cv.width !== (W*dpr|0) || cv.height !== (H*dpr|0)){ cv.width = W*dpr|0; cv.height = H*dpr|0; }
+  const g = cv.getContext('2d');
+  g.setTransform(dpr,0,0,dpr,0,0);
+  g.clearRect(0,0,W,H);
+  if (!plot.n) return;
+
+  /* newest sample decides the window; everything is drawn right-aligned to now */
+  const newest = plot.t[(plot.head - 1 + PCAP) % PCAP];
+  const t0 = newest - PLOT_SEC*1000;
+  const rowH = H / CHAN.length;
+  const noise = Det.noiseFloor(D);
+  const NA = D.cal && D.cal.noiseAmp;
+  rowsGeom.length = 0;
+
+  for (let r=0;r<CHAN.length;r++){
+    const c = CHAN[r];
+    const y0 = r*rowH, y1 = y0 + rowH;
+    const pad = 3;
+    /* autoscale from the window when no fixed scale is given, so an angle channel is legible */
+    let lo = Infinity, hi = -Infinity;
+    for (let k=0;k<plot.n;k++){
+      const i = (plot.head - plot.n + k + PCAP) % PCAP;
+      if (plot.t[i] < t0) continue;
+      const v = plot.v[c.k][i];
+      if (Number.isFinite(v)){ if (v < lo) lo = v; if (v > hi) hi = v; }
+    }
+    const th = c.th ? cfgGet(c.th) : null;
+    /* the threshold and its mirror have to stay on screen, or dragging one off the row would make it
+       unrecoverable */
+    if (th != null){ lo = Math.min(lo, c.sym ? -th : th); hi = Math.max(hi, th); }
+    if (!Number.isFinite(lo)){ lo = 0; hi = 1; }
+    if (c.scale != null){
+      /* the minimum half-range, respected symmetrically or from zero as the channel demands */
+      if (c.sym){ const m = Math.max(c.scale, Math.abs(lo), Math.abs(hi)); lo = -m; hi = m; }
+      else { lo = Math.min(lo, 0); hi = Math.max(hi, c.scale); }
+    }
+    { const m = (hi - lo)*0.10 + 1e-6; lo -= m; hi += m; }
+    const Y = (v)=> y1 - pad - ((v - lo)/(hi - lo))*(rowH - 2*pad);
+    const X = (t)=> ((t - t0)/(PLOT_SEC*1000))*W;
+
+    /* row separator */
+    g.strokeStyle = 'rgba(255,255,255,.07)'; g.lineWidth = 1;
+    g.beginPath(); g.moveTo(0, y1); g.lineTo(W, y1); g.stroke();
+
+    /* THE NOISE BAND. Around zero for a zero-centred channel, around the threshold otherwise —
+       in both cases it shows the span the camera alone can produce. */
+    /* the band is "how far can this wander with nobody moving", so it is the amplitude capture or
+       nothing — see the note in noiseTable about the 369-sigma category error */
+    const sig = (NA && NA[c.k]) || 0;
+    if (sig > 0){
+      const centre = c.sym ? 0 : (c.th ? cfgGet(c.th) : 0);
+      const a = Y(centre - 3*sig), b = Y(centre + 3*sig);
+      g.fillStyle = 'rgba(255,122,122,.13)';
+      g.fillRect(0, Math.min(a,b), W, Math.abs(a-b));
+    }
+    /* zero line for a signed channel */
+    if (c.sym){
+      g.strokeStyle = 'rgba(255,255,255,.16)';
+      g.beginPath(); g.moveTo(0, Y(0)); g.lineTo(W, Y(0)); g.stroke();
+    }
+
+    /* raw, behind, when asked for: this is what the filter is being judged against */
+    if ($('tRaw').checked){
+      g.strokeStyle = 'rgba(255,255,255,.22)'; g.lineWidth = 1;
+      g.beginPath();
+      let started = false;
+      for (let k=0;k<plot.n;k++){
+        const i = (plot.head - plot.n + k + PCAP) % PCAP;
+        if (plot.t[i] < t0) continue;
+        const x = X(plot.t[i]), y = Y(plot.raw[c.k][i]);
+        if (!started){ g.moveTo(x,y); started = true; } else g.lineTo(x,y);
+      }
+      g.stroke();
+    }
+
+    /* the channel */
+    g.strokeStyle = '#7cc4ff'; g.lineWidth = 1.6;
+    g.beginPath();
+    let started = false;
+    for (let k=0;k<plot.n;k++){
+      const i = (plot.head - plot.n + k + PCAP) % PCAP;
+      if (plot.t[i] < t0) continue;
+      const x = X(plot.t[i]), y = Y(plot.v[c.k][i]);
+      if (!Number.isFinite(y)) continue;
+      if (!started){ g.moveTo(x,y); started = true; } else g.lineTo(x,y);
+    }
+    g.stroke();
+
+    /* the threshold, draggable. Drawn for both signs on a symmetric channel, because a step fires on
+       either foot and showing only the positive line hides half the story. */
+    if (c.th){
+      const th = cfgGet(c.th);
+      g.strokeStyle = '#ffc452'; g.lineWidth = 1; g.setLineDash([5,3]);
+      g.beginPath(); g.moveTo(0, Y(th)); g.lineTo(W, Y(th)); g.stroke();
+      if (c.sym){ g.beginPath(); g.moveTo(0, Y(-th)); g.lineTo(W, Y(-th)); g.stroke(); }
+      g.setLineDash([]);
+      rowsGeom.push({ r, path:c.th, y0, y1, lo, hi, pad, rowH });
+    }
+
+    /* label and value on ONE line. Two lines cost 10px of a row that is only ~40px tall on a phone,
+       which left the trace itself a sliver — and the trace is the entire reason for the panel. */
+    const cur = plot.v[c.k][(plot.head - 1 + PCAP) % PCAP];
+    g.font = '9px ui-monospace,monospace';
+    g.fillStyle = 'rgba(147,163,189,.95)';
+    g.fillText(c.lab, 4, y0 + 9);
+    g.fillStyle = '#eef2f8';
+    g.fillText(Number.isFinite(cur) ? cur.toFixed(3) : '—', 4 + g.measureText(c.lab).width + 6, y0 + 9);
+  }
+
+  /* event ticks across the whole height, so a jump lines up with the trace that produced it */
+  for (const e of plot.ev){
+    if (e.t < t0) continue;
+    const x = ((e.t - t0)/(PLOT_SEC*1000))*W;
+    const lab = /^L:/.test(e.kind);
+    g.strokeStyle = lab ? 'rgba(255,122,122,.95)' : 'rgba(110,231,160,.75)';
+    g.lineWidth = lab ? 1.6 : 1;
+    g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke();
+    g.fillStyle = lab ? '#ff9a9a' : '#6ee7a0';
+    g.font = '8px ui-monospace,monospace';
+    g.save(); g.translate(x+2, 9); g.fillText(e.kind.replace(/^L:/,''), 0, 0); g.restore();
+  }
+}
+
+/* ---- dragging a threshold ---------------------------------------------------------------- */
+{
+  const cv = $('plotCv');
+  const pick = (ev)=>{
+    const rect = cv.getBoundingClientRect();
+    const y = ev.clientY - rect.top;
+    let best = null, bd = Infinity;
+    for (const rg of rowsGeom){
+      if (y < rg.y0 || y > rg.y1) continue;
+      const d = 0;                       // inside its own row is close enough; one line per row
+      if (d < bd){ bd = d; best = rg; }
+    }
+    return best;
+  };
+  const valueAt = (rg, ev)=>{
+    const rect = cv.getBoundingClientRect();
+    const y = ev.clientY - rect.top;
+    const frac = (rg.y1 - rg.pad - y)/(rg.rowH - 2*rg.pad);
+    return rg.lo + frac*(rg.hi - rg.lo);
+  };
+  cv.addEventListener('pointerdown', (ev)=>{
+    const rg = pick(ev);
+    if (!rg) return;
+    drag = rg;
+    cv.setPointerCapture(ev.pointerId);
+    ev.preventDefault();
+  });
+  cv.addEventListener('pointermove', (ev)=>{
+    if (!drag) return;
+    const v = valueAt(drag, ev);
+    /* clamped to the row's own scale, and never negative for a magnitude channel */
+    const lo = Math.min(drag.lo, drag.hi), hi = Math.max(drag.lo, drag.hi);
+    cfgSet(drag.path, Math.max(CHAN[drag.r].sym ? 0 : lo, Math.min(hi, v)));
+    if (replay.trace) replayRender();     // re-run from raw, never from a cached feature
+    drawPlots(); noiseTable();
+  });
+  const end = ()=>{ drag = null; };
+  cv.addEventListener('pointerup', end);
+  cv.addEventListener('pointercancel', end);
+}
+
+/* ---- the numeric strip ------------------------------------------------------------------- */
+function noiseTable(){
+  const tb = $('noiseBody');
+  if (!tb) return;
+  const noise = Det.noiseFloor(D);
+  const NA = D.cal && D.cal.noiseAmp;
+  let html = '';
+  for (const c of CHAN){
+    const cur = D.body[c.k];
+    /* TWO DIFFERENT NUMBERS, and mixing them up was the whole mistake this project already made once.
+       The curvature floor describes how much the signal rattles and is always available; the AMPLITUDE
+       capture describes how far it wanders and is the only one a threshold can be divided by. Showing
+       a threshold over the curvature floor produced "369 sigma" for ankleAlt, which is not a large
+       margin — it is a category error printed as a number. So the sigma column stays blank until an
+       amplitude capture exists, and the footer says how to get one. */
+    const sig = noise.chFloor[c.k] || 0;
+    const amp = NA && NA[c.k];
+    const th = c.th ? cfgGet(c.th) : null;
+    const mult = (amp > 0 && th != null) ? th/amp : null;
+    /* under 3 sigma a threshold is inside the noise and will be crossed by nothing happening; under
+       1.5 it is hopeless. Flagged rather than left for the reader to divide. */
+    const cls = mult == null ? '' : mult < 1.5 ? 'bad' : mult < 3 ? 'warn' : '';
+    html += `<tr class="${cls}"><td>${c.lab}</td>` +
+            `<td>${Number.isFinite(cur) ? cur.toFixed(3) : '—'}</td>` +
+            `<td>${amp > 0 ? amp.toFixed(4) : (sig > 0 ? sig.toFixed(4) + '·' : '—')}</td>` +
+            `<td>${th != null ? (+th).toFixed(3) : '—'}</td>` +
+            `<td>${mult != null ? mult.toFixed(1) : '—'}</td></tr>`;
+  }
+  tb.innerHTML = html;
+  const lm = noise.lmFloor || noise.lmMean;
+  $('plotFoot').textContent =
+    `camera noise ${lm ? lm.toFixed(4) : '—'} (now ${noise.lmMean ? noise.lmMean.toFixed(4) : '—'})` +
+    (lm > CONFIG.noise.warnLm ? '  ⚠ noisier than anything the thresholds were tuned against' : '') +
+    (NA ? `  ·  amplitude captured on ${NA.samples} samples`
+        : '  ·  no amplitude capture — run Calibrate; a · marks a curvature figure, which no threshold divides by');
+}
+
+/* ---- framing warnings ------------------------------------------------------------------- */
+function framingWarn(){
+  const box = $('warn');
+  if (!D.frame.valid){ box.classList.remove('on'); return; }
+  const F = D.frame, out = [];
+  /* image y is flipped by `adapt`, so 1 is the top of the frame and 0 the bottom */
+  const noseY = F.img[LM.NOSE].y;
+  const ankleY = Math.min(F.img[LM.ANKLE_L].y, F.img[LM.ANKLE_R].y);
+  if (noseY > 0.85) out.push('HEAD NEAR THE TOP EDGE — step back or tilt the phone down');
+  if (ankleY < 0.08) out.push('FEET NEAR THE BOTTOM EDGE — step back or tilt up');
+  const cal = D.cal;
+  if (cal && cal.ready && cal.torsoLen > 0){
+    const drift = (D.body.torsoLen - cal.torsoLen)/cal.torsoLen;
+    if (Math.abs(drift) > 0.20)
+      out.push(`${drift > 0 ? 'CLOSER' : 'FURTHER'} THAN WHEN CALIBRATED by ${Math.abs(100*drift).toFixed(0)}% — every ratio shifts`);
+  }
+  box.classList.toggle('on', out.length > 0);
+  if (out.length) box.innerHTML = out.map(t=>`<div>${t}</div>`).join('');
+}
+
 const ov = $('ov');
 function paint(){
   const cam = $('cam');
@@ -436,11 +876,199 @@ $('bSave').addEventListener('click', ()=>{
   setTimeout(()=>URL.revokeObjectURL(url), 30000);
 });
 
+/* =====================================================================================
+   GROUND TRUTH BUTTONS — built from the detector's own list, so the two cannot drift apart.
+   ===================================================================================== */
+{
+  const row = $('labs');
+  for (const kind of (Det.LABELS || [])){
+    const b = document.createElement('button');
+    b.textContent = kind.toUpperCase();
+    b.title = kind;
+    b.addEventListener('click', ()=>{
+      /* performance.now() is the clock the capture timestamps use, so a tap lands ON the timeline */
+      const t = performance.now();
+      if (Det.recLabel(D, kind, t)){
+        plotMark(t, 'L:' + kind);
+        b.classList.add('hit');
+        setTimeout(()=>b.classList.remove('hit'), 170);
+        $('labN').textContent = (D.rec ? D.rec.labels.length : 0) + ' labels';
+      }
+    });
+    row.insertBefore(b, $('labN'));
+  }
+}
+
+/* =====================================================================================
+   REPLAY — a loaded trace, scrubbed, always recomputed from the raw landmarks.
+
+   "Recomputed from raw, never from a cached feature" is the one property that makes this useful:
+   drag a threshold or move a filter slider and the traces redraw as that setting would have rendered a
+   movement somebody really performed. Caching features would turn this into a picture viewer.
+
+   A separate detector from the live one, so loading a trace cannot disturb a running camera session,
+   and so switching back to live resumes rather than restarts.
+   ===================================================================================== */
+const replay = { trace:null, det:null, at:0 };
+
+function resOfFrame(f){
+  if (!f.valid || !f.img) return null;
+  const L = new Array(33), W = f.world ? new Array(33) : null;
+  for (let i=0;i<33;i++){
+    const p = i*4;
+    L[i] = { x:f.img[p], y:f.img[p+1], z:f.img[p+2], visibility:f.img[p+3] };
+    if (W){ const q = i*3; W[i] = { x:f.world[q], y:f.world[q+1], z:f.world[q+2] }; }
+  }
+  return W ? { landmarks:[L], worldLandmarks:[W] } : { landmarks:[L] };
+}
+
+function loadTrace(tr){
+  if (!tr || tr.format !== 'belt-runner-pose-trace'){ flash('NOT A POSE TRACE', '--bad'); return false; }
+  const F = (tr.frames || []).filter(f => f && f.live);
+  if (!F.length){ flash('TRACE HAS NO FRAMES', '--bad'); return false; }
+  /* capture order for the timeline; arrival order is used when feeding, below */
+  F.sort((a,b)=> a.t - b.t);
+  replay.trace = { ...tr, frames:F };
+  replay.at = F.length - 1;
+  $('scrub').max = String(F.length - 1);
+  $('scrub').value = String(replay.at);
+  $('scrubRow').classList.add('on');
+  flash('LOADED ' + F.length + ' FRAMES', '--good');
+  replayRender();
+  return true;
+}
+
+function replayRender(){
+  const tr = replay.trace;
+  if (!tr) return;
+  const F = tr.frames;
+  const upto = Math.max(0, Math.min(F.length - 1, replay.at|0));
+
+  /* a fresh detector each render: the pipeline is stateful by design (filters, dwell timers, machine
+     states), so the only way a scrub position means one definite thing is to run the trace from its
+     start every time. A few hundred frames of this is a millisecond or two. */
+  const d = Det.create();
+  if (tr.calibration) Det.setCalibration(d, tr.calibration);
+  replay.det = d;
+  plotClear();
+
+  /* FED IN ARRIVAL ORDER, PLOTTED ON THE TIMELINE — the same distinction the offline script makes.
+     Inference results can come back out of capture order, and the live session's state evolved in the
+     order they ARRIVED, so replaying in capture order reproduces a session that never happened. */
+  const idx = F.map((f,i)=>i).slice(0, upto + 1);
+  if (F.some(f => f.seq !== undefined)) idx.sort((a,b)=> F[a].seq - F[b].seq);
+
+  const rows = new Array(upto + 1);
+  for (const i of idx){
+    const f = F[i];
+    if (f.live && f.live.want !== undefined && f.live.want !== d.want) Det.setWant(d, f.live.want);
+    const ev = Det.push(d, resOfFrame(f), f.t, null);
+    rows[i] = { t:f.t, jump:!!ev.jump, step:!!ev.step, lane:ev.lane, crouch:!!ev.crouch,
+                b:{} };
+    for (const c of CHAN) rows[i].b[c.k] = d.body[c.k];
+    rows[i].b.cadence = ev.cadence;
+  }
+  /* now push in TIMELINE order, which is what the plot is an axis of */
+  for (let i=0;i<=upto;i++){
+    const r = rows[i];
+    if (!r) continue;
+    plotPush(r.t, r.b, null);
+    if (r.jump) plotMark(r.t, 'jump');
+    if (r.lane) plotMark(r.t, r.lane < 0 ? 'laneL' : 'laneR');
+  }
+  for (const L of (tr.labels || [])){
+    if (L.t <= F[upto].t) plotMark(L.t, 'L:' + L.kind);
+  }
+
+  const t0 = F[0].t;
+  $('scrubAt').textContent = `${((F[upto].t - t0)/1000).toFixed(2)}s  ${upto+1}/${F.length}`;
+  drawPlots();
+  noiseTable();
+}
+
+$('bLoad').addEventListener('click', ()=> $('fTrace').click());
+$('fTrace').addEventListener('change', async (e)=>{
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  try { loadTrace(JSON.parse(await file.text())); }
+  catch(err){ flash('COULD NOT READ: ' + err.message, '--bad'); }
+  e.target.value = '';
+});
+$('scrub').addEventListener('input', ()=>{ replay.at = +$('scrub').value; replayRender(); });
+const step = (n)=>{
+  if (!replay.trace) return;
+  replay.at = Math.max(0, Math.min(replay.trace.frames.length - 1, replay.at + n));
+  $('scrub').value = String(replay.at);
+  replayRender();
+};
+$('bStepBack').addEventListener('click', ()=>step(-1));
+$('bStepFwd').addEventListener('click', ()=>step(1));
+$('bLive').addEventListener('click', ()=>{
+  replay.trace = null; replay.det = null;
+  $('scrubRow').classList.remove('on');
+  plotClear();
+  flash('LIVE', '--good');
+});
+
+/* =====================================================================================
+   LIVE TUNING — every control recomputes rather than re-renders a cache.
+   ===================================================================================== */
+function reTune(){
+  if (replay.trace) replayRender(); else { drawPlots(); noiseTable(); }
+}
+$('tFc').addEventListener('input', ()=>{
+  CONFIG.smooth.fcMin = +$('tFc').value; $('oFc').textContent = (+$('tFc').value).toFixed(1); reTune();
+});
+$('tBeta').addEventListener('input', ()=>{
+  CONFIG.smooth.beta = +$('tBeta').value; $('oBeta').textContent = (+$('tBeta').value).toFixed(2); reTune();
+});
+$('tSmooth').addEventListener('change', ()=>{ CONFIG.smooth.on = $('tSmooth').checked; reTune(); });
+$('tRaw').addEventListener('change', ()=>{
+  /* the shadow detector only exists while the raw overlay is on */
+  if ($('tRaw').checked && !rawDet) rawDet = Det.create();
+  reTune();
+});
+/* INFERENCE RATE, decoupled from the render loop. `minIntervalMs` is the pump's own cap: the capture
+   loop still ticks at display rate, but a frame is only ever SENT this often. Lower it and the phone
+   runs cooler and the traces get coarser, which is a trade worth being able to make while looking at
+   the traces rather than in a config file. */
+$('tRate').addEventListener('input', ()=>{
+  const hz = +$('tRate').value;
+  S.minIntervalMs = 1000/hz;
+  $('oRate').textContent = String(hz);
+});
+
+/* DEVICE ORIENTATION, so "how upright is the phone" is a number rather than a guess. Every camera
+   geometry in this layer assumes a phone propped at a modest tilt, and a phone flat on its back sees a
+   ceiling. iOS needs a user gesture to grant this, hence the click handler. */
+{
+  const show = (ev)=>{
+    const b = ev.beta, g = ev.gamma;
+    if (b == null && g == null) return;
+    $('tOri').textContent = `tilt ${b == null ? '—' : b.toFixed(0)}° roll ${g == null ? '—' : g.toFixed(0)}°`;
+  };
+  const arm = ()=>{
+    const R = window.DeviceOrientationEvent && DeviceOrientationEvent.requestPermission;
+    if (R) R().then(s=>{ if (s === 'granted') addEventListener('deviceorientation', show); }).catch(()=>{});
+    else addEventListener('deviceorientation', show);
+  };
+  $('tOri').addEventListener('click', arm);
+  if (!(window.DeviceOrientationEvent && DeviceOrientationEvent.requestPermission)) arm();
+}
+
+/* the label row is only meaningful while recording */
+const labSync = ()=>{ $('labs').classList.toggle('on', Det.recording(D)); };
+setInterval(labSync, 300);
+
 /* keep browser gestures out of the way on a phone */
 for (const ev of ['gesturestart','gesturechange','contextmenu'])
   addEventListener(ev, (e)=>e.preventDefault(), {passive:false});
-addEventListener('touchmove', (e)=>{ if (e.touches.length>1) e.preventDefault(); }, {passive:false});
-addEventListener('resize', paint);
+/* the plot canvas owns its own vertical drags, so a threshold drag is not also a page scroll */
+addEventListener('touchmove', (e)=>{
+  if (e.target && e.target.id === 'plotCv'){ if (e.cancelable) e.preventDefault(); return; }
+  if (e.touches.length>1) e.preventDefault();
+}, {passive:false});
+addEventListener('resize', ()=>{ paint(); drawPlots(); });
 </script>
 </body>
 </html>

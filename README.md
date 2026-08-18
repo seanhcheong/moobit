@@ -60,6 +60,37 @@ instrument, and this project has been misled by its own harnesses more than once
 noise floor, the commands a motionless body produced, and where each threshold sits against the range
 the body actually covered. [`TESTING.md`](TESTING.md#5-if-you-want-to-help-me-tune) walks through it.
 
+While recording, a row of buttons records **ground truth** — someone taps `JUMP`/`DUCK`/`TURN` as you
+move — and the report scores recall and precision per movement against those taps. A human tap lags by
+200–400ms, so the window is wide and no latency figure is reported: these answer "did it register, and
+how much fired that shouldn't", which is what tuning a threshold needs.
+
+### Thresholds in multiples of measured noise
+
+An absolute threshold is the wrong shape for this problem. "A knee under 140°" means one thing on a quiet
+camera in good light and another in a dim room, because in one case the noise is nowhere near it and in
+the other the noise crosses it unaided — which is what a player means when the detection "spazzes out".
+
+So [`pose/noise.js`](pose/noise.js) measures the floor, and gates take a **floor** at a multiple of it —
+never a replacement, capped at 3×, so a quiet camera behaves exactly as before and only a noisy one gets
+stricter. Phantom steps from a body standing perfectly still, per 20 seconds, at landmark noise 0.012:
+**22 → 0**, with real running still tracking 1.56 / 2.42 / 3.42 against a true 1.6 / 2.6 / 3.8.
+
+Two measures, for two shapes of threshold. A **second difference** describes how much a signal rattles —
+it cancels postural sway, so it measures the camera rather than the person, and recovers an injected sigma
+to 0% error across 0.002–0.020. That is the wrong measure for an amplitude gate, because a low-pass filter
+moves noise *down* in frequency rather than removing it, and slow wander with real amplitude is exactly
+what a second difference ignores. So amplitude is measured separately, during the hold-still window
+onboarding already asks for, and stored on the calibration. The file records what three failed attempts
+taught, including why a stillness detector cannot work at realistic noise.
+
+### `posecheck.html` grew up
+
+Same detection layer, no game. Live traces with **draggable threshold lines** that write into the config,
+the measured noise drawn as a band so a threshold inside it is visibly hopeless, trace loading with
+scrub and frame-step that **recomputes from raw** on every parameter change, framing warnings, and a live
+inference-rate control. See [`TESTING.md`](TESTING.md#posecheckhtml--the-tuning-tool).
+
 ### "Importing a module script failed"
 
 That is Safari's wording (Chromium says "Failed to fetch dynamically imported module") and it

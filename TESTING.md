@@ -125,8 +125,35 @@ for the chip still captures what caused it — you do not have to predict it. An
 during calibration, because the calibrator rewrites your body fit on every frame and a trace carries
 only one.
 
-`posecheck.html`'s **Record** / **Save JSON** buttons write the same format, for tuning one exercise
-in isolation.
+**Tap the movement buttons.** While recording, a row of buttons appears — `JUMP`, `DUCK`, `TURN-LEFT`,
+`TURN-RIGHT`, `RUN-START`, `RUN-STOP`. Someone taps them as you move. That is ground truth, and it turns
+"it felt wrong" into recall and precision per movement. On the very first synthetic trace it reported
+`jump recall 1/1 (100%) precision 1/6 (17%)` — six jumps fired and one was a jump.
+
+One limit worth knowing: a human tap lags by 200–400ms, so the matching window is deliberately wide and
+**no latency figure is reported**. These answer "did it register, and how much fired that shouldn't" —
+which is what tuning a threshold needs anyway.
+
+### `posecheck.html` — the tuning tool
+
+Same detection layer, no game, and now the thing to use when a signal is misbehaving:
+
+- **Live traces**, one row per channel over a 6-second window, with each threshold drawn as a
+  **draggable line**. Drag it and it writes straight into the live config — move the line, watch the
+  detection change on the same body in the same light.
+- **The measured noise as a shaded band.** A threshold line inside the band is one that noise will cross
+  with nobody moving. That is the whole point of the noise work, made visible instead of arithmetic.
+- **Load a trace** and scrub or step through it frame by frame. Changing `fcMin`, `beta` or any threshold
+  **recomputes from the raw landmarks** rather than redrawing a cache — so what you see is what that
+  setting would have done to a movement that really happened.
+- **Framing warnings** for a head near the top edge, feet near the bottom, or standing more than 20%
+  closer or further than when you calibrated.
+- **Live inference rate** (5–30 Hz), decoupled from the render loop, for trading heat against resolution
+  while looking at the traces.
+- Its **Record** / **Save JSON** write the same trace format the game does.
+
+Running in place shows the two ankles out of phase in `ankleSplit`; a jump shows them in phase with a
+`jumpRise` spike. If that is not what you see, the problem is upstream of any threshold.
 
 **What I do with it.** Replay it offline through the same detector the camera drives:
 
